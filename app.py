@@ -149,6 +149,13 @@ SKIP_WORDS = [
     # College sports (except major tournament events)
     "college baseball","college softball","college volleyball",
     "college football practice","spring game",
+    # Known overpriced events (primary market already inflated)
+    "ufc 327",
+    # Community/regional theater
+    "men's chorus","women's chorus","community chorus",
+    "philharmonic","symphony orchestra","chamber orchestra",
+    "semi finals","semifinal","quarterfinal",
+    "ncaa women","ncaa men's baseball","ncaa swimming",
 ]
 
 CC_CODES    = ["CITI","AMEX","CAPITALONE","CHASE","MASTERCARD","VISA","CITICARD"]
@@ -787,12 +794,24 @@ async def run_scan():
             city_mult = e.get("city_mult", 1.0)
 
             # Get face value (what TM is currently charging)
+            # Use smarter defaults based on event type when TM returns no price
             if face_high > face_low > 0:
                 tm_face = (face_low + face_high) / 2
             elif face_low > 0:
-                tm_face = face_low * 1.25  # Add estimated TM fees to low price
+                tm_face = face_low * 1.25
             else:
-                tm_face = 85  # Default if no price data
+                # Smart default based on event type — no more $85 for UFC events
+                name_l = e.get("name","").lower()
+                if any(k in name_l for k in ["ufc","boxing","title fight","wwe","wrestlemania"]):
+                    tm_face = 200  # UFC events are typically $150-250 face
+                elif any(k in name_l for k in ["nba","nhl","nfl","mlb","playoff","finals"]):
+                    tm_face = 150
+                elif any(k in name_l for k in ["hamilton","wicked","broadway"]):
+                    tm_face = 180
+                elif "comedy" in e.get("category","").lower():
+                    tm_face = 75
+                else:
+                    tm_face = 95
 
             # Get resell multiplier
             mult = get_multiplier(
