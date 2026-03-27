@@ -42,16 +42,34 @@ MIN_PROFIT = 40   # minimum profit per ticket after all fees
 MIN_ROI    = 20   # minimum ROI %
 
 CITIES = [
-    ("Seattle",    "WA", 1.0),
-    ("Las Vegas",  "NV", 1.3),
-    ("Los Angeles","CA", 1.2),
-    ("Nashville",  "TN", 1.25),
-    ("New York",   "NY", 1.15),
-    ("Chicago",    "IL", 1.1),
-    ("Miami",      "FL", 1.1),
-    ("Dallas",     "TX", 1.1),
-    ("Portland",   "OR", 0.95),
-    ("Tacoma",     "WA", 0.9),
+    # Tier 1 — highest resell premiums in the US
+    ("New York",      "NY", 1.35),
+    ("Las Vegas",     "NV", 1.30),
+    ("Los Angeles",   "CA", 1.25),
+    ("Nashville",     "TN", 1.25),
+    ("Chicago",       "IL", 1.15),
+    ("Boston",        "MA", 1.15),
+    ("San Francisco", "CA", 1.15),
+    # Tier 2 — strong resell markets
+    ("Miami",         "FL", 1.10),
+    ("Philadelphia",  "PA", 1.10),
+    ("Newark",        "NJ", 1.10),  # NYC metro, UFC events
+    ("Atlanta",       "GA", 1.10),
+    ("Washington",    "DC", 1.08),
+    ("Houston",       "TX", 1.08),
+    ("Dallas",        "TX", 1.08),
+    ("Denver",        "CO", 1.08),
+    ("Phoenix",       "AZ", 1.05),
+    ("Minneapolis",   "MN", 1.05),
+    ("Orlando",       "FL", 1.05),
+    ("San Diego",     "CA", 1.05),
+    # Tier 3 — good regional markets
+    ("Seattle",       "WA", 1.00),
+    ("Detroit",       "MI", 1.00),
+    ("Sacramento",    "CA", 1.00),
+    ("Portland",      "OR", 0.95),
+    ("Tacoma",        "WA", 0.90),
+    ("Bellevue",      "WA", 0.90),
 ]
 
 # ── ALWAYS SKIP THESE ─────────────────────────────────────────
@@ -688,6 +706,13 @@ async def run_scan():
             # Calculate profit
             profit = calc_profit(face_avg, sg, mult)
 
+            # KEY CHECK: If Ticketmaster face value is already close to resell, skip
+            # This filters out events where the primary market has already priced in demand
+            if face_avg > 0 and profit["resell"] > 0:
+                if face_avg >= profit["resell"] * 0.85:
+                    # Face value is already 85%+ of resell — not worth it after fees
+                    continue
+
             # Only keep if profitable
             if not profit["is_profitable"]:
                 continue
@@ -1042,14 +1067,17 @@ def main():
     tg_s = "Enabled ✓" if TG_TOKEN else "Add TELEGRAM_TOKEN"
     print(f"""
 ╔{'═'*57}╗
-║  TICKET INTEL PRO v4                                  ║
+║  TICKET INTEL PRO v6 — 25 Cities                      ║
 ╠{'═'*57}╣
 ║  Mode:     {mode:<47}║
 ║  Filter:   Only shows profit > ${MIN_PROFIT}/ticket + {MIN_ROI}% ROI         ║
+║  TM Check: Filters events already priced above resell ║
 ║  SeatGeek: {sg_s:<47}║
 ║  Telegram: {tg_s:<47}║
-║  Cities:   Seattle, Las Vegas, LA, Nashville, NYC     ║
-║            Chicago, Miami, Dallas, Portland, Tacoma   ║
+║  Cities:   NYC, Las Vegas, LA, Nashville, Chicago     ║
+║            Boston, SF, Miami, Philly, Newark, Atlanta ║
+║            DC, Houston, Dallas, Denver, Phoenix,      ║
+║            Minneapolis, Orlando, San Diego, Seattle + ║
 ║  URL:      http://localhost:{PORT:<30}║
 ╚{'═'*57}╝
 """)
