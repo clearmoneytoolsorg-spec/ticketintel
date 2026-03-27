@@ -364,7 +364,7 @@ def score_it(event: dict, profit: dict) -> dict:
     boost = 10 if profit["source"]=="verified" else 0
 
     total = round(min(99,max(0,
-        asc*0.25 + vsc*0.15 + psc*0.35 + rsc*0.25 + boost
+        asc*0.20 + vsc*0.15 + psc*0.40 + rsc*0.25 + boost
     )), 1)
 
     if total>=80:   verdict="MUST BUY"
@@ -629,18 +629,34 @@ async def run_scan():
             raw = get_mock_events()
             log.info(f"Demo mode: {len(raw)} mock events")
 
-        # 2. Filter to wanted events only
+        # 2. Filter to wanted events only + deduplicate by show+venue
         wanted = []
-        seen = set()
+        seen_ids = set()
+        seen_shows = {}  # "show_name|venue" -> best event so far
+
         for e in raw:
             eid = e.get("id","")
-            if eid in seen: continue
-            seen.add(eid)
-            if is_wanted(e):
-                wanted.append(e)
+            if eid in seen_ids: continue
+            seen_ids.add(eid)
+            if not is_wanted(e): continue
 
+            # Dedup key: normalize name + venue
+            name_key = re.sub(r'[^a-z0-9]','',e.get("name","").lower())[:40]
+            venue_key = re.sub(r'[^a-z0-9]','',e.get("venue","").lower())[:20]
+            dedup_key = f"{name_key}|{venue_key}"
+
+            if dedup_key not in seen_shows:
+                seen_shows[dedup_key] = e
+            else:
+                # Keep the soonest upcoming date (best for presale window)
+                existing_days = _days_until(seen_shows[dedup_key].get("date",""))
+                new_days = _days_until(e.get("date",""))
+                if new_days < existing_days and new_days >= 3:
+                    seen_shows[dedup_key] = e
+
+        wanted = list(seen_shows.values())
         filtered_out = len(raw) - len(wanted)
-        log.info(f"{len(wanted)} wanted events ({filtered_out} filtered out as junk)")
+        log.info(f"{len(wanted)} unique wanted events ({filtered_out} filtered/deduped)")
 
         # 3. Score + price check each wanted event
         opportunities = []
