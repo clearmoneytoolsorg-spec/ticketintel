@@ -123,14 +123,32 @@ WANTED = [
 ]
 
 SKIP_WORDS = [
+    # Generic junk
     "tribute","cover band","open mic","karaoke","free ",
     "varsity","high school","youth ","kids ","children",
     "cheerleading","pro cheer","dance competition",
-    "college baseball","college softball","college volleyball",
     "tractor pull","rodeo","monster truck",
     "community theatre","amateur","unsigned",
     "comedy open mic","improv showcase",
-    "parking pass","parking",  # No parking pass resell
+    "parking pass","parking",
+    # Golf — never profitable enough
+    "pga tour","lpga","masters tournament","the open championship",
+    "us open golf","ryder cup","presidents cup","cadillac championship",
+    "arnold palmer","players championship","fedex cup",
+    "golf championship","golf classic","golf invitational",
+    "country club golf","golf tournament",
+    # Tennis — rarely profitable
+    "atp tour","wta tour","us open tennis","wimbledon",
+    "french open","australian open","davis cup",
+    "clay court","hard court championship","tennis classic",
+    "tennis tournament","tennis open",
+    # Minor sports
+    "lacrosse","field hockey","volleyball championship",
+    "swimming championship","gymnastics championship",
+    "track and field","cross country",
+    # College sports (except major tournament events)
+    "college baseball","college softball","college volleyball",
+    "college football practice","spring game",
 ]
 
 CC_CODES    = ["CITI","AMEX","CAPITALONE","CHASE","MASTERCARD","VISA","CITICARD"]
@@ -536,32 +554,45 @@ def is_wanted(event: dict) -> bool:
     artist = (event.get("artist") or "").lower()
     cat    = event.get("category", "").lower()
 
-    # Skip garbage
+    # Always skip these first
     if any(k in name for k in SKIP_WORDS):
         return False
 
-    # Must be in future
+    # Must be in future (at least 3 days)
     if _days_until(event.get("date", "")) < 3:
         return False
 
-    # Skip very cheap events (likely free/community)
+    # Skip very cheap events
     face_low = event.get("face_low", 0) or 0
     if face_low > 0 and face_low < 20:
         return False
 
     combined = name + " " + artist
 
-    # Check whitelist
+    # Check music/comedy/theater whitelist
     if any(k in combined for k in WANTED):
         return True
 
-    # Championship/playoff sports
-    if "sport" in cat and any(k in name for k in ["playoff", "championship", "finals", "title", "world series", "stanley cup", "nba finals", "super bowl"]):
-        return True
+    # For sports: ONLY allow specific high-value events
+    # Do NOT rely on generic words like "championship" or "finals"
+    if "sport" in cat:
+        # UFC, boxing, wrestling — always good
+        if any(k in combined for k in ["ufc", "boxing championship", "title fight", "title bout", "wwe", "wrestlemania", "bellator", "one championship"]):
+            return True
+        # Major league playoffs only
+        if any(k in name for k in ["nba finals", "stanley cup final", "world series", "super bowl", "nfl championship", "nfc championship", "afc championship"]):
+            return True
+        # March Madness Final Four and championship only
+        if any(k in name for k in ["ncaa final four", "ncaa championship", "final four", "ncaa men's basketball championship - final", "ncaa women's basketball championship - final"]):
+            return True
+        # Skip everything else in sports
+        return False
 
-    # Broadway/theater
-    if "arts" in cat and any(k in name for k in ["musical", "opera", "symphony", "ballet"]):
-        return True
+    # Arts/theater — only known shows
+    if "arts" in cat:
+        if any(k in name for k in ["hamilton", "wicked", "lion king", "beetlejuice", "hadestown", "chicago musical", "phantom", "les miserables", "mean girls musical", "six musical", "moulin rouge"]):
+            return True
+        return False
 
     return False
 
@@ -878,406 +909,637 @@ async def scan_loop():
         await asyncio.sleep(SCAN_MINS * 60)
 
 # ── DASHBOARD ─────────────────────────────────────────────────
+
 HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Ticket Intel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
+
 :root{
-  --bg:#0a0e18;--surface:#111827;--surface2:#1a2235;--border:#1e2d42;
-  --green:#00c896;--red:#ff4757;--amber:#ffa502;--blue:#3d9be9;--dim:#6b7fa0;--text:#e2e8f4;
-  --mono:ui-monospace,'SF Mono','Fira Code',monospace
+  --ink:#0d0f14;
+  --paper:#f5f3ef;
+  --surface:#ffffff;
+  --border:#e8e4dc;
+  --border2:#d4cfc5;
+  --accent:#1a1a2e;
+  --green:#1a7a5e;
+  --green-bg:#edf7f3;
+  --green-border:#c2e8d8;
+  --red:#c0392b;
+  --red-bg:#fdf0ee;
+  --red-border:#f5c2bb;
+  --amber:#b45309;
+  --amber-bg:#fef7ec;
+  --amber-border:#fcd9a0;
+  --blue:#1e4d8c;
+  --blue-bg:#eef4ff;
+  --blue-border:#c2d6f5;
+  --dim:#8a8278;
+  --mono:'DM Mono',monospace;
+  --sans:'Syne',sans-serif;
 }
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+
+body{
+  font-family:var(--sans);
+  background:var(--paper);
+  color:var(--ink);
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+}
+
 a{color:inherit;text-decoration:none}
 
-/* HEADER */
-nav{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:99}
-.brand{display:flex;align-items:center;gap:10px}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
-.brand-name{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--green);letter-spacing:.1em}
-.badge{font-family:var(--mono);font-size:10px;padding:2px 8px;border-radius:4px;margin-left:6px;background:rgba(255,165,2,.12);color:var(--amber);border:1px solid rgba(255,165,2,.25)}
-.badge.live{background:rgba(0,200,150,.12);color:var(--green);border-color:rgba(0,200,150,.25)}
-.nav-right{display:flex;align-items:center;gap:12px}
-.scan-btn{font-family:var(--mono);font-size:11px;padding:7px 18px;border-radius:6px;border:1px solid rgba(0,200,150,.35);background:rgba(0,200,150,.08);color:var(--green);cursor:pointer;letter-spacing:.05em;transition:background .15s}
-.scan-btn:hover{background:rgba(0,200,150,.18)}
-.scan-btn:disabled{opacity:.4;cursor:not-allowed}
-.last-update{font-size:11px;color:var(--dim)}
+/* ── NAV ── */
+nav{
+  background:var(--ink);
+  padding:0 32px;
+  display:flex;
+  align-items:stretch;
+  height:56px;
+  position:sticky;
+  top:0;
+  z-index:99;
+}
+.nav-brand{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin-right:auto;
+}
+.nav-dot{
+  width:7px;height:7px;
+  border-radius:50%;
+  background:#4ade80;
+  box-shadow:0 0 8px #4ade8099;
+  animation:glow 2s infinite;
+}
+@keyframes glow{0%,100%{opacity:1;box-shadow:0 0 8px #4ade8099}50%{opacity:.5;box-shadow:0 0 3px #4ade8033}}
+.nav-name{
+  font-family:var(--mono);
+  font-size:12px;
+  font-weight:500;
+  color:#f5f3ef;
+  letter-spacing:.15em;
+}
+.nav-badge{
+  font-family:var(--mono);
+  font-size:9px;
+  padding:2px 7px;
+  border-radius:3px;
+  border:1px solid;
+  letter-spacing:.08em;
+}
+.nav-badge.demo{background:rgba(255,165,2,.1);color:#fbbf24;border-color:rgba(251,191,36,.2)}
+.nav-badge.live{background:rgba(74,222,128,.1);color:#4ade80;border-color:rgba(74,222,128,.2)}
+.nav-right{
+  display:flex;
+  align-items:center;
+  gap:16px;
+}
+.nav-status{
+  font-family:var(--mono);
+  font-size:10px;
+  color:#6b7280;
+}
+.scan-btn{
+  font-family:var(--mono);
+  font-size:10px;
+  font-weight:500;
+  padding:0 20px;
+  height:32px;
+  border-radius:4px;
+  border:1px solid rgba(74,222,128,.35);
+  background:rgba(74,222,128,.08);
+  color:#4ade80;
+  cursor:pointer;
+  letter-spacing:.1em;
+  transition:all .15s;
+}
+.scan-btn:hover{background:rgba(74,222,128,.18)}
+.scan-btn:disabled{opacity:.35;cursor:not-allowed}
 
-/* STATS BAR */
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:16px 24px}
-.stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
-.stat-n{font-family:var(--mono);font-size:22px;font-weight:600}
-.stat-l{font-size:10px;color:var(--dim);margin-top:3px;text-transform:uppercase;letter-spacing:.08em}
+/* ── STATS ── */
+.stats-row{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:1px;
+  background:var(--border);
+  border-bottom:1px solid var(--border);
+}
+.stat{
+  background:var(--surface);
+  padding:20px 28px;
+}
+.stat-num{
+  font-family:var(--mono);
+  font-size:28px;
+  font-weight:500;
+  line-height:1;
+}
+.stat-label{
+  font-size:11px;
+  color:var(--dim);
+  margin-top:5px;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+}
 
-/* FILTER BAR */
-.filters{display:flex;gap:6px;padding:0 24px 14px;flex-wrap:wrap;align-items:center}
-.filt{font-size:12px;padding:5px 14px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer;transition:all .15s}
-.filt.active{background:var(--green);color:#0a0e18;border-color:transparent;font-weight:600}
-.scan-info{font-size:11px;color:var(--dim);margin-left:auto}
+/* ── FILTER BAR ── */
+.filter-bar{
+  background:var(--surface);
+  border-bottom:1px solid var(--border);
+  padding:0 32px;
+  display:flex;
+  align-items:center;
+  gap:4px;
+  height:48px;
+}
+.filt{
+  font-family:var(--sans);
+  font-size:12px;
+  font-weight:500;
+  padding:5px 14px;
+  border-radius:4px;
+  border:1px solid transparent;
+  background:transparent;
+  color:var(--dim);
+  cursor:pointer;
+  transition:all .15s;
+}
+.filt:hover{color:var(--ink);background:var(--paper)}
+.filt.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.filt.verified-filt{color:var(--green)}
+.filt.verified-filt.on{background:var(--green);color:white;border-color:var(--green)}
+.scan-info{
+  font-family:var(--mono);
+  font-size:10px;
+  color:var(--dim);
+  margin-left:auto;
+}
 
-/* SECTION HEADER */
-.section-head{font-family:var(--mono);font-size:10px;letter-spacing:.15em;color:var(--dim);text-transform:uppercase;padding:4px 24px 8px}
+/* ── MAIN CONTENT ── */
+.main{padding:32px;max-width:960px;margin:0 auto}
 
-/* EVENT CARD */
-.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;margin:0 24px 8px;overflow:hidden;cursor:pointer;transition:border-color .2s}
-.card:hover{border-color:#2d4060}
-.card.open{border-color:rgba(0,200,150,.45)}
-.card-top{display:flex;gap:12px;align-items:flex-start;padding:14px 16px}
-.score-box{width:46px;height:46px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:15px;font-weight:700;flex-shrink:0}
-.card-info{flex:1;min-width:0}
-.card-name{font-size:14px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.card-sub{font-size:11px;color:var(--dim);margin-top:3px}
-.card-tags{display:flex;gap:5px;margin-top:5px;flex-wrap:wrap}
-.tag{font-size:10px;font-family:var(--mono);padding:2px 7px;border-radius:4px;border:1px solid}
-.tag-city{background:var(--surface2);border-color:var(--border);color:var(--dim)}
-.tag-presale-live{background:rgba(255,71,87,.12);border-color:rgba(255,71,87,.3);color:var(--red)}
-.tag-presale-soon{background:rgba(255,165,2,.1);border-color:rgba(255,165,2,.25);color:var(--amber)}
-.tag-presale{background:rgba(107,127,160,.1);border-color:var(--border);color:var(--dim)}
-.tag-verified{background:rgba(0,200,150,.1);border-color:rgba(0,200,150,.25);color:var(--green)}
-.tag-est{background:rgba(255,165,2,.08);border-color:rgba(255,165,2,.2);color:var(--amber)}
+/* ── SECTION LABEL ── */
+.section-label{
+  font-family:var(--mono);
+  font-size:10px;
+  letter-spacing:.15em;
+  text-transform:uppercase;
+  color:var(--dim);
+  margin-bottom:12px;
+  margin-top:28px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.section-label:first-child{margin-top:0}
+.section-label::after{content:'';flex:1;height:1px;background:var(--border)}
+
+/* ── EVENT CARD ── */
+.card{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:12px;
+  margin-bottom:8px;
+  overflow:hidden;
+  cursor:pointer;
+  transition:border-color .2s, box-shadow .2s;
+}
+.card:hover{border-color:var(--border2);box-shadow:0 2px 12px rgba(0,0,0,.06)}
+.card.open{border-color:var(--ink)}
+
+/* Card top row */
+.card-top{
+  display:flex;
+  align-items:center;
+  gap:16px;
+  padding:18px 20px;
+}
+.score{
+  width:48px;height:48px;
+  border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  font-family:var(--mono);
+  font-size:16px;font-weight:600;
+  flex-shrink:0;
+}
+.card-body{flex:1;min-width:0}
+.card-name{
+  font-size:15px;font-weight:600;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  color:var(--ink);
+}
+.card-meta{
+  font-size:12px;color:var(--dim);margin-top:3px;
+}
+.card-pills{display:flex;gap:5px;margin-top:7px;flex-wrap:wrap}
+.pill{
+  font-family:var(--mono);font-size:9px;
+  padding:2px 8px;border-radius:20px;
+  border:1px solid;letter-spacing:.05em;
+}
+.pill-city{background:var(--paper);border-color:var(--border2);color:var(--dim)}
+.pill-live{background:var(--red-bg);border-color:var(--red-border);color:var(--red)}
+.pill-soon{background:var(--amber-bg);border-color:var(--amber-border);color:var(--amber)}
+.pill-presale{background:var(--paper);border-color:var(--border);color:var(--dim)}
+.pill-verified{background:var(--green-bg);border-color:var(--green-border);color:var(--green)}
+.pill-est{background:var(--amber-bg);border-color:var(--amber-border);color:var(--amber)}
 .card-right{text-align:right;flex-shrink:0}
-.profit-num{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--green)}
-.profit-lbl{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
-.verdict-tag{display:inline-block;font-family:var(--mono);font-size:9px;padding:2px 7px;border-radius:4px;margin-top:5px;letter-spacing:.05em}
-.v-MUST{background:rgba(255,71,87,.12);color:var(--red);border:1px solid rgba(255,71,87,.3)}
-.v-STRONG{background:rgba(0,200,150,.1);color:var(--green);border:1px solid rgba(0,200,150,.25)}
-.v-BUY{background:rgba(0,200,150,.07);color:var(--green);border:1px solid rgba(0,200,150,.18)}
-.v-WATCH{background:rgba(255,165,2,.08);color:var(--amber);border:1px solid rgba(255,165,2,.2)}
-.progress{height:2px;background:var(--border)}
-.progress-fill{height:100%;transition:width .4s}
+.profit-big{
+  font-family:var(--mono);font-size:18px;font-weight:600;
+  color:var(--green);
+}
+.profit-sub{font-size:10px;color:var(--dim);margin-top:2px;text-transform:uppercase;letter-spacing:.06em}
+.verdict{
+  display:inline-block;
+  font-family:var(--mono);font-size:9px;
+  padding:3px 8px;border-radius:3px;
+  margin-top:5px;letter-spacing:.06em;border:1px solid;
+}
+.v-MUST{background:var(--red-bg);color:var(--red);border-color:var(--red-border)}
+.v-STRONG{background:var(--green-bg);color:var(--green);border-color:var(--green-border)}
+.v-BUY{background:var(--green-bg);color:var(--green);border-color:var(--green-border)}
+.v-WATCH{background:var(--amber-bg);color:var(--amber);border-color:var(--amber-border)}
 
-/* CARD DETAIL */
-.detail{display:none;padding:14px 16px;border-top:1px solid var(--border)}
+/* Progress bar */
+.bar{height:2px;background:var(--border)}
+.bar-fill{height:100%;transition:width .5s cubic-bezier(.4,0,.2,1)}
+
+/* Card detail */
+.detail{
+  display:none;
+  padding:20px;
+  border-top:1px solid var(--border);
+  background:var(--paper);
+}
 .card.open .detail{display:block}
-.detail-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:12px}
-.detail-box{background:var(--surface2);border-radius:8px;padding:10px 12px}
-.detail-val{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text)}
-.detail-lbl{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin-top:2px}
-.verified-box{background:rgba(0,200,150,.06);border:1px solid rgba(0,200,150,.18);border-radius:8px;padding:10px 12px;margin-bottom:10px}
-.verified-title{font-size:10px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
-.verified-text{font-size:12px;color:var(--dim)}
-.info-row{background:var(--surface2);border-radius:8px;padding:10px 12px;margin-bottom:7px}
-.info-title{font-size:10px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
-.info-text{font-size:12px;color:var(--dim);line-height:1.6}
-.info-text b{color:var(--text)}
-.codes-wrap{margin-bottom:10px}
-.codes-title{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:5px}
-.codes{display:flex;flex-wrap:wrap;gap:4px}
-.code{font-family:var(--mono);font-size:10px;background:rgba(61,155,233,.1);border:1px solid rgba(61,155,233,.2);border-radius:4px;padding:2px 7px;color:var(--blue)}
-.action-row{display:flex;gap:7px;flex-wrap:wrap}
-.btn-buy{font-size:13px;font-weight:600;padding:10px 20px;border-radius:8px;border:none;background:var(--green);color:#0a0e18;cursor:pointer;transition:opacity .15s;display:flex;align-items:center;gap:6px}
-.btn-buy:hover{opacity:.88}
-.btn-secondary{font-size:12px;padding:9px 16px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer;transition:background .15s}
-.btn-secondary:hover{background:var(--surface2);color:var(--text)}
 
-/* EMPTY STATE */
-.empty{text-align:center;padding:60px 24px;color:var(--dim)}
-.empty-title{font-size:15px;font-weight:600;color:var(--text);margin-bottom:8px}
-.empty-sub{font-size:13px;line-height:1.7}
+.detail-grid{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:8px;
+  margin-bottom:16px;
+}
+.dbox{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:12px 14px;
+}
+.dval{
+  font-family:var(--mono);font-size:13px;font-weight:600;color:var(--ink);
+}
+.dlbl{
+  font-size:9px;color:var(--dim);margin-top:3px;
+  text-transform:uppercase;letter-spacing:.07em;
+}
 
-/* LOADING */
-.loading{text-align:center;padding:50px;color:var(--dim);font-family:var(--mono);font-size:12px;letter-spacing:.1em;animation:fade 1.5s infinite}
+/* Verified data box */
+.verified-row{
+  background:var(--green-bg);
+  border:1px solid var(--green-border);
+  border-radius:8px;
+  padding:12px 14px;
+  margin-bottom:12px;
+}
+.verified-label{
+  font-family:var(--mono);font-size:9px;font-weight:600;
+  color:var(--green);text-transform:uppercase;letter-spacing:.1em;
+  margin-bottom:4px;
+}
+.verified-text{font-size:12px;color:#1f5c47}
+
+/* Info rows */
+.info{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:12px 14px;
+  margin-bottom:8px;
+}
+.info-label{
+  font-family:var(--mono);font-size:9px;font-weight:600;
+  color:var(--dim);text-transform:uppercase;letter-spacing:.1em;
+  margin-bottom:5px;
+}
+.info-text{font-size:12px;color:var(--dim);line-height:1.7}
+.info-text b{color:var(--ink)}
+
+/* Presale codes */
+.codes-section{margin-bottom:14px}
+.codes-label{
+  font-family:var(--mono);font-size:9px;color:var(--dim);
+  text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;
+}
+.codes{display:flex;flex-wrap:wrap;gap:5px}
+.code{
+  font-family:var(--mono);font-size:10px;
+  background:var(--blue-bg);border:1px solid var(--blue-border);
+  border-radius:4px;padding:3px 9px;color:var(--blue);
+}
+
+/* Action buttons */
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.btn-primary{
+  font-family:var(--sans);font-size:13px;font-weight:600;
+  padding:11px 22px;border-radius:8px;
+  border:none;background:var(--ink);color:var(--paper);
+  cursor:pointer;transition:opacity .15s;
+  display:flex;align-items:center;gap:7px;
+}
+.btn-primary:hover{opacity:.85}
+.btn-secondary{
+  font-family:var(--sans);font-size:12px;font-weight:500;
+  padding:10px 18px;border-radius:8px;
+  border:1px solid var(--border2);background:var(--surface);
+  color:var(--dim);cursor:pointer;transition:all .15s;
+}
+.btn-secondary:hover{border-color:var(--ink);color:var(--ink)}
+.btn-sg{border-color:var(--green-border);color:var(--green)}
+.btn-sg:hover{border-color:var(--green);background:var(--green-bg)}
+
+/* Empty state */
+.empty{
+  text-align:center;padding:80px 32px;
+}
+.empty-icon{font-size:40px;margin-bottom:16px;opacity:.3}
+.empty-title{font-size:16px;font-weight:600;color:var(--ink);margin-bottom:8px}
+.empty-text{font-size:13px;color:var(--dim);line-height:1.8;max-width:400px;margin:0 auto}
+
+/* Loading */
+.loading{
+  text-align:center;padding:80px;
+  font-family:var(--mono);font-size:11px;color:var(--dim);
+  letter-spacing:.12em;text-transform:uppercase;
+  animation:fade 1.5s infinite;
+}
 @keyframes fade{0%,100%{opacity:.3}50%{opacity:1}}
 
 @media(max-width:640px){
-  .stats{grid-template-columns:1fr 1fr}
+  nav{padding:0 16px}
+  .stats-row{grid-template-columns:1fr 1fr}
+  .filter-bar{padding:0 16px;overflow-x:auto}
+  .main{padding:16px}
   .detail-grid{grid-template-columns:1fr 1fr}
-  nav,.stats,.filters,.section-head,.card{padding-left:14px;padding-right:14px}
-  .card{margin-left:0;margin-right:0}
+  .card-top{gap:12px;padding:14px 16px}
+  .stat{padding:16px 20px}
 }
 </style>
 </head>
 <body>
 
 <nav>
-  <div class="brand">
-    <div class="dot"></div>
-    <span class="brand-name">TICKET INTEL</span>
-    <span class="badge" id="mode-badge">DEMO</span>
+  <div class="nav-brand">
+    <div class="nav-dot"></div>
+    <span class="nav-name">TICKET INTEL</span>
+    <span class="nav-badge demo" id="mode-badge">DEMO</span>
   </div>
   <div class="nav-right">
-    <span class="last-update" id="last-update">Loading...</span>
-    <button class="scan-btn" id="scan-btn" onclick="triggerScan()">SCAN NOW</button>
+    <span class="nav-status" id="last-update">Loading...</span>
+    <button class="scan-btn" id="scan-btn" onclick="scan()">SCAN NOW</button>
   </div>
 </nav>
 
-<div class="stats" id="stats-bar">
-  <div class="stat"><div class="stat-n">—</div><div class="stat-l">Loading</div></div>
+<div class="stats-row" id="stats"></div>
+
+<div class="filter-bar">
+  <div id="filters"></div>
+  <span class="scan-info" id="scan-info"></span>
 </div>
 
-<div class="filters" id="filter-bar"></div>
-
-<div id="event-list">
-  <div class="loading">SCANNING MARKETS...</div>
+<div class="main" id="main">
+  <div class="loading">Scanning markets...</div>
 </div>
 
 <script>
-let allEvents = [], activeFilter = 'all', openId = null;
+let events = [], filter = 'all', open = null;
 
-const fmt = s => {
-  try { return new Date(s).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
-  catch { return s; }
-};
-const daysTo = s => {
-  try { return Math.round((new Date(s) - new Date()) / 86400000); }
-  catch { return 0; }
-};
-const scoreColor = n => n >= 80 ? '#ff4757' : n >= 65 ? '#00c896' : n >= 52 ? '#ffa502' : '#6b7fa0';
-const scoreBg    = n => n >= 80 ? 'rgba(255,71,87,.15)' : n >= 65 ? 'rgba(0,200,150,.12)' : n >= 52 ? 'rgba(255,165,2,.12)' : 'rgba(107,127,160,.1)';
-const vKey       = v => v.split(' ')[0];
+const fmt = s => { try { return new Date(s).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); } catch { return s; } };
+const days = s => { try { return Math.round((new Date(s)-new Date())/864e5); } catch { return 0; } };
 
-async function loadData() {
+// Color system — warm/editorial palette
+const scoreStyle = n => {
+  if (n >= 80) return { bg:'#fdf0ee', color:'#c0392b', border:'#f5c2bb' };
+  if (n >= 65) return { bg:'#edf7f3', color:'#1a7a5e', border:'#c2e8d8' };
+  if (n >= 52) return { bg:'#fef7ec', color:'#b45309', border:'#fcd9a0' };
+  return { bg:'#f5f3ef', color:'#8a8278', border:'#e8e4dc' };
+};
+const barColor = n => n >= 80 ? '#c0392b' : n >= 65 ? '#1a7a5e' : n >= 52 ? '#b45309' : '#d4cfc5';
+const vKey = v => v.split(' ')[0];
+
+async function load() {
   try {
-    const res  = await fetch('/api/events');
-    const data = await res.json();
-    allEvents  = data.events || [];
-    renderStats(data);
+    const d = await fetch('/api/events').then(r => r.json());
+    events = d.events || [];
+    renderStats(d);
     renderFilters();
-    renderEvents();
-    const t = data.last_scan
-      ? new Date(data.last_scan).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
-      : 'never';
+    renderCards();
+    const t = d.last_scan ? new Date(d.last_scan).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : 'never';
     document.getElementById('last-update').textContent = 'Updated ' + t;
-    const isLive = allEvents.some(e => e.source && e.source !== 'demo');
-    const badge  = document.getElementById('mode-badge');
-    badge.textContent   = isLive ? 'LIVE' : 'DEMO';
-    badge.className     = isLive ? 'badge live' : 'badge';
-    const cities = data.cities_scanned || 0;
-    const filtered = data.filtered_count || 0;
-    const filterInfo = document.getElementById('filter-info');
-    if (filterInfo) {
-      filterInfo.textContent = cities > 0
-        ? `${cities} cities · ${filtered} filtered out · ${allEvents.length} opportunities`
-        : `${filtered} filtered · ${allEvents.length} opportunities`;
-    }
-  } catch(e) {
-    console.error('Load error:', e);
-  }
+    const isLive = events.some(e => e.source && e.source !== 'demo');
+    const b = document.getElementById('mode-badge');
+    b.textContent = isLive ? 'LIVE' : 'DEMO';
+    b.className = 'nav-badge ' + (isLive ? 'live' : 'demo');
+    const info = document.getElementById('scan-info');
+    if (info) info.textContent = `${d.cities_scanned||0} cities · ${d.filtered_count||0} filtered · ${events.length} opportunities`;
+  } catch(e) { console.error(e); }
 }
 
-async function triggerScan() {
+async function scan() {
   const btn = document.getElementById('scan-btn');
-  btn.disabled = true;
-  btn.textContent = 'SCANNING...';
-  document.getElementById('last-update').textContent = 'Scanning now...';
+  btn.disabled = true; btn.textContent = 'SCANNING...';
+  document.getElementById('last-update').textContent = 'Scanning...';
   try {
-    await fetch('/api/scan', { method: 'POST' });
-    await new Promise(r => setTimeout(r, 6000));
-    await loadData();
-  } catch(e) {
-    console.error('Scan error:', e);
-  }
-  btn.disabled = false;
-  btn.textContent = 'SCAN NOW';
+    await fetch('/api/scan', {method:'POST'});
+    await new Promise(r => setTimeout(r, 7000));
+    await load();
+  } catch(e) { console.error(e); }
+  btn.disabled = false; btn.textContent = 'SCAN NOW';
 }
 
-function renderStats(data) {
-  const ev     = data.events || [];
+function renderStats(d) {
+  const ev = d.events || [];
   const must   = ev.filter(e => e.score?.verdict === 'MUST BUY').length;
   const strong = ev.filter(e => e.score?.verdict === 'STRONG BUY').length;
-  const presales = ev.filter(e => e.presale_days != null && e.presale_days >= 0 && e.presale_days <= 7).length;
+  const ps     = ev.filter(e => e.presale_days != null && e.presale_days >= 0 && e.presale_days <= 7).length;
   const maxP   = Math.max(0, ...ev.map(e => e.profit?.profit_4 || 0));
-  document.getElementById('stats-bar').innerHTML = `
-    <div class="stat"><div class="stat-n" style="color:#ff4757">${must}</div><div class="stat-l">Must buy</div></div>
-    <div class="stat"><div class="stat-n" style="color:#00c896">${strong}</div><div class="stat-l">Strong buy</div></div>
-    <div class="stat"><div class="stat-n" style="color:#ffa502">${presales}</div><div class="stat-l">Presales soon</div></div>
-    <div class="stat"><div class="stat-n" style="color:#00c896">$${Math.round(maxP).toLocaleString()}</div><div class="stat-l">Best 4-ticket</div></div>
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><div class="stat-num" style="color:#c0392b">${must}</div><div class="stat-label">Must buy</div></div>
+    <div class="stat"><div class="stat-num" style="color:#1a7a5e">${strong}</div><div class="stat-label">Strong buy</div></div>
+    <div class="stat"><div class="stat-num" style="color:#b45309">${ps}</div><div class="stat-label">Presales this week</div></div>
+    <div class="stat"><div class="stat-num" style="color:#1a7a5e">$${Math.round(maxP).toLocaleString()}</div><div class="stat-label">Best 4-ticket profit</div></div>
   `;
 }
 
 function renderFilters() {
-  const cats = [
-    { key: 'all',      label: 'All events' },
-    { key: 'concert',  label: 'Concerts' },
-    { key: 'sports',   label: 'Sports' },
-    { key: 'comedy',   label: 'Comedy' },
-    { key: 'presale',  label: 'Presales' },
-    { key: 'verified', label: '✓ Verified' },
+  const tabs = [
+    {k:'all',    l:'All events'},
+    {k:'concert',l:'Concerts'},
+    {k:'sports', l:'Sports'},
+    {k:'comedy', l:'Comedy'},
+    {k:'presale',l:'Presales'},
+    {k:'verified',l:'✓ Verified', cls:'verified-filt'},
   ];
-  document.getElementById('filter-bar').innerHTML =
-    cats.map(c =>
-      `<button class="filt${activeFilter === c.key ? ' active' : ''}" onclick="setFilter('${c.key}')">${c.label}</button>`
-    ).join('') +
-    `<span class="scan-info" id="filter-info"></span>`;
+  document.getElementById('filters').innerHTML = tabs.map(t =>
+    `<button class="filt${filter===t.k?' on':''} ${t.cls||''}" onclick="setFilter('${t.k}')">${t.l}</button>`
+  ).join('');
 }
 
-function setFilter(f) {
-  activeFilter = f;
-  renderFilters();
-  renderEvents();
-}
+function setFilter(f) { filter = f; renderFilters(); renderCards(); }
 
-function getFiltered() {
-  if (activeFilter === 'all')      return allEvents;
-  if (activeFilter === 'presale')  return allEvents.filter(e => e.presale_days != null && e.presale_days >= 0 && e.presale_days <= 10);
-  if (activeFilter === 'verified') return allEvents.filter(e => e.profit?.source === 'verified');
-  return allEvents.filter(e => {
-    const cat = (e.category || '').toLowerCase();
-    if (activeFilter === 'concert') return cat.includes('music') || cat.includes('concert');
-    if (activeFilter === 'sports')  return cat.includes('sport');
-    if (activeFilter === 'comedy')  return cat.includes('comedy');
+function filtered() {
+  if (filter === 'all')      return events;
+  if (filter === 'presale')  return events.filter(e => e.presale_days != null && e.presale_days >= 0 && e.presale_days <= 10);
+  if (filter === 'verified') return events.filter(e => e.profit?.source === 'verified');
+  return events.filter(e => {
+    const c = (e.category||'').toLowerCase();
+    if (filter === 'concert') return c.includes('music') || c.includes('concert');
+    if (filter === 'sports')  return c.includes('sport');
+    if (filter === 'comedy')  return c.includes('comedy');
     return false;
   });
 }
 
-function renderEvents() {
-  const filtered = getFiltered();
+function renderCards() {
+  const list = filtered();
   const groups = {
-    'MUST BUY':   filtered.filter(e => e.score?.verdict === 'MUST BUY'),
-    'STRONG BUY': filtered.filter(e => e.score?.verdict === 'STRONG BUY'),
-    'BUY':        filtered.filter(e => e.score?.verdict === 'BUY'),
-    'WATCH':      filtered.filter(e => e.score?.verdict === 'WATCH'),
+    'MUST BUY':   list.filter(e => e.score?.verdict === 'MUST BUY'),
+    'STRONG BUY': list.filter(e => e.score?.verdict === 'STRONG BUY'),
+    'BUY':        list.filter(e => e.score?.verdict === 'BUY'),
+    'WATCH':      list.filter(e => e.score?.verdict === 'WATCH'),
   };
-  const labels = {
-    'MUST BUY':   'Act now — must buy',
-    'STRONG BUY': 'Strong buy',
-    'BUY':        'Buy',
-    'WATCH':      'Watch',
-  };
-
+  const labels = {'MUST BUY':'Act now','STRONG BUY':'Strong buy','BUY':'Buy','WATCH':'Watch'};
   let html = '';
-  for (const [verdict, items] of Object.entries(groups)) {
+  for (const [v, items] of Object.entries(groups)) {
     if (!items.length) continue;
-    html += `<div class="section-head">${labels[verdict]}</div>`;
-    items.forEach(e => { html += renderCard(e); });
+    html += `<div class="section-label">${labels[v]}</div>`;
+    items.forEach(e => { html += card(e); });
   }
-
-  if (!html) {
-    html = `<div class="empty">
-      <div class="empty-title">No profitable opportunities right now</div>
-      <div class="empty-sub">
-        The scanner checked every event across ${state_cities} cities and filtered out anything<br>
-        where the margin wasn't confirmed profitable.<br><br>
-        New events are announced daily — check back soon or click <strong>SCAN NOW</strong>.
-      </div>
+  if (!html) html = `
+    <div class="empty">
+      <div class="empty-icon">◎</div>
+      <div class="empty-title">No opportunities right now</div>
+      <div class="empty-text">The scanner filtered out every event in ${events.length > 0 ? 'this category' : '23 cities'} — either the margin was too thin or face value is already gone.<br><br>New events are announced daily. Click <strong>Scan Now</strong> or check back soon.</div>
     </div>`;
-  }
-
-  document.getElementById('event-list').innerHTML = html;
+  document.getElementById('main').innerHTML = html;
 }
 
-function presaleTag(e) {
+function psTag(e) {
   const pd = e.presale_days;
   if (pd == null || pd < 0) return '';
-  if (pd === 0) return '<span class="tag tag-presale-live">PRESALE LIVE</span>';
-  if (pd === 1) return '<span class="tag tag-presale-soon">Presale tomorrow</span>';
-  if (pd <= 3)  return `<span class="tag tag-presale-soon">Presale in ${pd} days</span>`;
-  if (pd <= 7)  return `<span class="tag tag-presale">Presale in ${pd} days</span>`;
+  if (pd === 0) return '<span class="pill pill-live">Presale live now</span>';
+  if (pd === 1) return '<span class="pill pill-soon">Presale tomorrow</span>';
+  if (pd <= 3)  return `<span class="pill pill-soon">Presale in ${pd} days</span>`;
+  if (pd <= 7)  return `<span class="pill pill-presale">Presale in ${pd} days</span>`;
   return '';
 }
 
-function renderCard(e) {
-  const sc = e.score   || {};
-  const p  = e.profit  || {};
-  const st = e.strategy || {};
-  const tot   = sc.total || 0;
-  const vk    = vKey(sc.verdict || 'WATCH');
-  const isV   = p.source === 'verified';
-  const days  = daysTo(e.date);
-  const codes = (e.codes || []).slice(0, 10);
+function card(e) {
+  const sc = e.score || {}, p = e.profit || {}, st = e.strategy || {};
+  const n   = Math.round(sc.total || 0);
+  const sty = scoreStyle(n);
+  const vk  = vKey(sc.verdict || 'WATCH');
+  const isV = p.source === 'verified';
+  const d   = days(e.date);
+  const codes = (e.codes || []).slice(0, 12);
 
   return `
-  <div class="card${openId === e.id ? ' open' : ''}" id="card-${e.id}" onclick="toggleCard('${e.id}')">
+  <div class="card${open===e.id?' open':''}" id="c${e.id}" onclick="toggle('${e.id}')">
     <div class="card-top">
-      <div class="score-box" style="background:${scoreBg(tot)};color:${scoreColor(tot)}">${Math.round(tot)}</div>
-      <div class="card-info">
-        <div class="card-name">${e.name || ''}</div>
-        <div class="card-sub">${e.venue || ''} · ${fmt(e.date)} · ${days}d away</div>
-        <div class="card-tags">
-          <span class="tag tag-city">${e.city || ''}</span>
-          ${presaleTag(e)}
-          ${isV ? '<span class="tag tag-verified">✓ verified price</span>' : '<span class="tag tag-est">estimated</span>'}
+      <div class="score" style="background:${sty.bg};color:${sty.color};border:1px solid ${sty.border}">${n}</div>
+      <div class="card-body">
+        <div class="card-name">${e.name||''}</div>
+        <div class="card-meta">${e.venue||''} &middot; ${fmt(e.date)} &middot; ${d} days away</div>
+        <div class="card-pills">
+          <span class="pill pill-city">${e.city||''}</span>
+          ${psTag(e)}
+          ${isV ? '<span class="pill pill-verified">✓ verified</span>' : '<span class="pill pill-est">estimated</span>'}
         </div>
       </div>
       <div class="card-right">
-        <div class="profit-num">+$${Math.round(p.profit_per || 0)}</div>
-        <div class="profit-lbl">per ticket</div>
-        <div class="verdict-tag v-${vk}">${sc.verdict || ''}</div>
+        <div class="profit-big">+$${Math.round(p.profit_per||0)}</div>
+        <div class="profit-sub">per ticket</div>
+        <div class="verdict v-${vk}">${sc.verdict||''}</div>
       </div>
     </div>
-    <div class="progress">
-      <div class="progress-fill" style="width:${Math.min(tot, 100)}%;background:${scoreColor(tot)}"></div>
-    </div>
+    <div class="bar"><div class="bar-fill" style="width:${Math.min(n,100)}%;background:${barColor(n)}"></div></div>
     <div class="detail">
       <div class="detail-grid">
-        <div class="detail-box">
-          <div class="detail-val" style="color:#00c896">+$${Math.round(p.profit_4 || 0).toLocaleString()}</div>
-          <div class="detail-lbl">Buying 4 tickets</div>
+        <div class="dbox">
+          <div class="dval" style="color:#1a7a5e">+$${Math.round(p.profit_4||0).toLocaleString()}</div>
+          <div class="dlbl">Buying 4 tickets</div>
         </div>
-        <div class="detail-box">
-          <div class="detail-val">$${Math.round(p.tm_total || p.tm_face || 0)} → $${Math.round(p.resell || 0)}</div>
-          <div class="detail-lbl">You pay → resell</div>
+        <div class="dbox">
+          <div class="dval">$${Math.round(p.tm_total||p.tm_face||0)} &rarr; $${Math.round(p.resell||0)}</div>
+          <div class="dlbl">You pay &rarr; resell</div>
         </div>
-        <div class="detail-box">
-          <div class="detail-val">${Math.round(p.roi_pct || 0)}%</div>
-          <div class="detail-lbl">ROI</div>
+        <div class="dbox">
+          <div class="dval">${Math.round(p.roi_pct||0)}%</div>
+          <div class="dlbl">Return on investment</div>
         </div>
-        <div class="detail-box">
-          <div class="detail-val">$${Math.round(st.capital || 0).toLocaleString()}</div>
-          <div class="detail-lbl">Capital needed</div>
+        <div class="dbox">
+          <div class="dval">$${Math.round(st.capital||0).toLocaleString()}</div>
+          <div class="dlbl">Capital needed</div>
         </div>
       </div>
 
       ${isV && p.sg_count ? `
-      <div class="verified-box">
-        <div class="verified-title">✓ Live SeatGeek Data</div>
-        <div class="verified-text">
-          <strong>${p.sg_count} active listings</strong> · 
-          Median <strong>$${Math.round(p.resell || 0)}</strong> · 
-          Range $${Math.round(p.resell_low || 0)}–$${Math.round(p.resell_high || 0)}
-        </div>
+      <div class="verified-row">
+        <div class="verified-label">✓ Live SeatGeek data</div>
+        <div class="verified-text"><strong>${p.sg_count} active listings</strong> &middot; Median price <strong>$${Math.round(p.resell||0)}</strong> &middot; Range $${Math.round(p.resell_low||0)}–$${Math.round(p.resell_high||0)}</div>
       </div>` : ''}
 
-      <div class="info-row">
-        <div class="info-title">Where to sit</div>
-        <div class="info-text">${st.seat || '—'}</div>
+      <div class="info">
+        <div class="info-label">Where to sit</div>
+        <div class="info-text">${st.seat||'Best available floor or lower level'}</div>
       </div>
 
-      <div class="info-row">
-        <div class="info-title">Sell strategy</div>
+      <div class="info">
+        <div class="info-label">Listing strategy</div>
         <div class="info-text">
-          List at <b>${st.list_at || '—'}</b> on StubHub + Vivid Seats + SeatGeek simultaneously.<br>
-          2 weeks before: drop to <b>${st.reduce_14 || '—'}</b> if unsold.<br>
-          3 days before: drop to <b>${st.reduce_3 || '—'}</b>.<br>
-          Never go below <b>${st.floor || '—'}</b>.
+          List at <b>${st.list_at||'—'}</b> on StubHub, Vivid Seats, and SeatGeek simultaneously.<br>
+          2 weeks before: drop to <b>${st.reduce_14||'—'}</b> if unsold &middot;
+          3 days before: <b>${st.reduce_3||'—'}</b> &middot;
+          Floor: <b>${st.floor||'—'}</b>
         </div>
       </div>
 
       ${codes.length ? `
-      <div class="codes-wrap">
-        <div class="codes-title">Presale codes to try</div>
-        <div class="codes">${codes.map(c => `<span class="code">${c}</span>`).join('')}</div>
+      <div class="codes-section">
+        <div class="codes-label">Presale codes to try</div>
+        <div class="codes">${codes.map(c=>`<span class="code">${c}</span>`).join('')}</div>
       </div>` : ''}
 
-      <div class="action-row">
-        ${e.url ? `<a href="${e.url}" target="_blank"><button class="btn-buy">Buy on Ticketmaster →</button></a>` : ''}
-        <a href="https://www.stubhub.com/find/s/?q=${encodeURIComponent(e.name || '')}" target="_blank"><button class="btn-secondary">StubHub</button></a>
-        <a href="https://www.vividseats.com/search?searchTerm=${encodeURIComponent(e.name || '')}" target="_blank"><button class="btn-secondary">Vivid Seats</button></a>
-        ${p.sg_url ? `<a href="${p.sg_url}" target="_blank"><button class="btn-secondary" style="color:#00c896;border-color:rgba(0,200,150,.3)">SeatGeek ✓</button></a>` : `<a href="https://www.seatgeek.com/search?q=${encodeURIComponent(e.name || '')}" target="_blank"><button class="btn-secondary">SeatGeek</button></a>`}
+      <div class="actions">
+        ${e.url ? `<a href="${e.url}" target="_blank"><button class="btn-primary">Buy on Ticketmaster &rarr;</button></a>` : ''}
+        <a href="https://www.stubhub.com/find/s/?q=${encodeURIComponent(e.name||'')}" target="_blank"><button class="btn-secondary">StubHub</button></a>
+        <a href="https://www.vividseats.com/search?searchTerm=${encodeURIComponent(e.name||'')}" target="_blank"><button class="btn-secondary">Vivid Seats</button></a>
+        ${p.sg_url
+          ? `<a href="${p.sg_url}" target="_blank"><button class="btn-secondary btn-sg">SeatGeek ✓</button></a>`
+          : `<a href="https://www.seatgeek.com/search?q=${encodeURIComponent(e.name||'')}" target="_blank"><button class="btn-secondary">SeatGeek</button></a>`}
       </div>
     </div>
   </div>`;
 }
 
-function toggleCard(id) {
-  openId = openId === id ? null : id;
-  renderEvents();
-  if (openId) {
-    const el = document.getElementById('card-' + id);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+function toggle(id) {
+  open = open === id ? null : id;
+  renderCards();
+  if (open) {
+    const el = document.getElementById('c' + id);
+    if (el) el.scrollIntoView({behavior:'smooth', block:'nearest'});
   }
 }
 
-// Replace placeholder in empty state
-const state_cities = 23;
-
-loadData();
-setInterval(loadData, 60000);
+load();
+setInterval(load, 60000);
 </script>
 </body>
 </html>"""
