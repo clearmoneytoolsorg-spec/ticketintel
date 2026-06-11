@@ -1,7 +1,7 @@
 """
-TICKET INTEL PRO v7
+TICKET INTEL PRO v11
 ====================
-Simple. Clean. One-click.
+Pipeline-first: presales and fresh on-sales lead. Stale events demoted.
 
 Every event card shows:
 - Whether face value tickets are still available on Ticketmaster
@@ -17,9 +17,10 @@ import sys, subprocess
 def install(pkg):
     subprocess.check_call([sys.executable,"-m","pip","install",pkg,"-q","--disable-pip-version-check"])
 
-for pkg in ["aiohttp","requests","python-dotenv"]:
+_DEPS = {"aiohttp": "aiohttp", "requests": "requests", "python-dotenv": "dotenv"}
+for pkg, mod in _DEPS.items():
     try:
-        __import__(pkg.replace("-","_"))
+        __import__(mod)
     except ImportError:
         print(f"Installing {pkg}...")
         install(pkg)
@@ -192,6 +193,7 @@ state = {
     "scanning": False,
     "filtered_count": 0,
     "cities_scanned": 0,
+    "first_seen": {},
 }
 
 # ── TELEGRAM ──────────────────────────────────────────────────
@@ -556,6 +558,32 @@ def _presale_days(s: str) -> int:
     except Exception:
         return 999
 
+def _onsale_days(s: str) -> Optional[int]:
+    """Days until public on-sale. Negative = already on sale N days ago. None = unknown."""
+    try:
+        return (datetime.strptime(s[:10], "%Y-%m-%d").date() - date.today()).days
+    except Exception:
+        return None
+
+def get_status(presale_days: Optional[int], onsale_days: Optional[int]) -> str:
+    """
+    Pipeline status — the core of what makes a deal real:
+    PRESALE      → presale window upcoming or today (the gold window)
+    ONSALE_SOON  → public on-sale still in the future (face value guaranteed)
+    FRESH        → went on sale within the last 7 days (face value likely available)
+    STALE        → on sale 8+ days (face value likely gone — demoted)
+    UNKNOWN      → no sale-date data from TM
+    """
+    if presale_days is not None and presale_days >= 0:
+        return "PRESALE"
+    if onsale_days is not None:
+        if onsale_days > 0:
+            return "ONSALE_SOON"
+        if onsale_days >= -7:
+            return "FRESH"
+        return "STALE"
+    return "UNKNOWN"
+
 def is_wanted(event: dict) -> bool:
     name   = event.get("name", "").lower()
     artist = (event.get("artist") or "").lower()
@@ -644,6 +672,8 @@ async def fetch_city(session, city: str, state_code: str, city_mult: float) -> L
                     presale_date = pd
                     break
 
+            on_sale = item.get("sales", {}).get("public", {}).get("startDateTime", "")[:10]
+
             events.append({
                 "id":           f"tm_{item.get('id', '')}",
                 "name":         item.get("name", ""),
@@ -658,6 +688,7 @@ async def fetch_city(session, city: str, state_code: str, city_mult: float) -> L
                 "face_high":    float(p.get("max") or 0),
                 "url":          item.get("url", ""),
                 "presale_date": presale_date,
+                "on_sale":      on_sale,
                 "source":       "ticketmaster",
                 "city_mult":    city_mult,
             })
@@ -669,33 +700,50 @@ def get_mock_events() -> List[dict]:
     today = date.today()
     def d(n): return str(today + timedelta(days=n))
     return [
-        {"id":"m01","name":"Morgan Wallen — Minneapolis","artist":"Morgan Wallen","venue":"U.S. Bank Stadium","city":"Minneapolis","state":"MN","capacity":67000,"date":d(14),"category":"concert","face_low":89,"face_high":199,"url":"https://www.ticketmaster.com","presale_date":"","source":"demo","city_mult":1.05},
-        {"id":"m02","name":"Chappell Roan — Pink Pony Tour","artist":"Chappell Roan","venue":"Ryman Auditorium","city":"Nashville","state":"TN","capacity":2362,"date":d(33),"category":"concert","face_low":65,"face_high":150,"url":"https://www.ticketmaster.com","presale_date":d(1),"source":"demo","city_mult":1.25},
-        {"id":"m03","name":"Hamilton","artist":"Hamilton","venue":"Richard Rodgers Theatre","city":"New York","state":"NY","capacity":1319,"date":d(20),"category":"arts","face_low":89,"face_high":399,"url":"https://www.ticketmaster.com","presale_date":"","source":"demo","city_mult":1.35},
-        {"id":"m04","name":"UFC 328: Chimaev v Strickland","artist":"UFC","venue":"Prudential Center","city":"Newark","state":"NJ","capacity":19500,"date":d(44),"category":"sports","face_low":75,"face_high":300,"url":"https://www.ticketmaster.com","presale_date":d(5),"source":"demo","city_mult":1.10},
-        {"id":"m05","name":"Dave Chappelle — One Night Only","artist":"Dave Chappelle","venue":"Chicago Theatre","city":"Chicago","state":"IL","capacity":3600,"date":d(28),"category":"comedy","face_low":75,"face_high":175,"url":"https://www.ticketmaster.com","presale_date":d(2),"source":"demo","city_mult":1.15},
-        {"id":"m06","name":"Zach Bryan — Boston","artist":"Zach Bryan","venue":"TD Garden","city":"Boston","state":"MA","capacity":19156,"date":d(55),"category":"concert","face_low":79,"face_high":249,"url":"https://www.ticketmaster.com","presale_date":d(7),"source":"demo","city_mult":1.15},
-        # This one should be filtered out — face value already close to resell
-        {"id":"m07","name":"UFC 327 — Miami","artist":"UFC","venue":"Kaseya Center","city":"Miami","state":"FL","capacity":19600,"date":d(15),"category":"sports","face_low":372,"face_high":500,"url":"https://www.ticketmaster.com","presale_date":"","source":"demo","city_mult":1.10},
+        # PRESALE pipeline — the gold
+        {"id":"m02","name":"Chappell Roan — Pink Pony Tour","artist":"Chappell Roan","venue":"Ryman Auditorium","city":"Nashville","state":"TN","capacity":2362,"date":d(33),"category":"concert","face_low":65,"face_high":150,"url":"https://www.ticketmaster.com","presale_date":d(1),"on_sale":d(3),"source":"demo","city_mult":1.25},
+        {"id":"m04","name":"UFC 328: Chimaev v Strickland","artist":"UFC","venue":"Prudential Center","city":"Newark","state":"NJ","capacity":19500,"date":d(44),"category":"sports","face_low":75,"face_high":300,"url":"https://www.ticketmaster.com","presale_date":d(5),"on_sale":d(7),"source":"demo","city_mult":1.10},
+        {"id":"m05","name":"Dave Chappelle — One Night Only","artist":"Dave Chappelle","venue":"Chicago Theatre","city":"Chicago","state":"IL","capacity":3600,"date":d(28),"category":"comedy","face_low":75,"face_high":175,"url":"https://www.ticketmaster.com","presale_date":d(2),"on_sale":d(4),"source":"demo","city_mult":1.15},
+        # ONSALE_SOON — face value guaranteed
+        {"id":"m06","name":"Zach Bryan — Boston","artist":"Zach Bryan","venue":"TD Garden","city":"Boston","state":"MA","capacity":19156,"date":d(55),"category":"concert","face_low":79,"face_high":249,"url":"https://www.ticketmaster.com","presale_date":"","on_sale":d(2),"source":"demo","city_mult":1.15},
+        # FRESH — just went on sale
+        {"id":"m08","name":"Kendrick Lamar — Grand National Tour","artist":"Kendrick Lamar","venue":"Crypto.com Arena","city":"Los Angeles","state":"CA","capacity":20000,"date":d(62),"category":"concert","face_low":99,"face_high":399,"url":"https://www.ticketmaster.com","presale_date":"","on_sale":d(-3),"source":"demo","city_mult":1.25},
+        # STALE — on sale for weeks, face value gone (gets demoted)
+        {"id":"m01","name":"Morgan Wallen — Minneapolis","artist":"Morgan Wallen","venue":"U.S. Bank Stadium","city":"Minneapolis","state":"MN","capacity":67000,"date":d(14),"category":"concert","face_low":89,"face_high":199,"url":"https://www.ticketmaster.com","presale_date":"","on_sale":d(-45),"source":"demo","city_mult":1.05},
+        {"id":"m03","name":"Hamilton","artist":"Hamilton","venue":"Richard Rodgers Theatre","city":"New York","state":"NY","capacity":1319,"date":d(20),"category":"arts","face_low":89,"face_high":399,"url":"https://www.ticketmaster.com","presale_date":"","on_sale":d(-120),"source":"demo","city_mult":1.35},
+        # Overpriced — filtered by margin check
+        {"id":"m07","name":"UFC 327 — Miami","artist":"UFC","venue":"Kaseya Center","city":"Miami","state":"FL","capacity":19600,"date":d(15),"category":"sports","face_low":372,"face_high":500,"url":"https://www.ticketmaster.com","presale_date":"","on_sale":d(-30),"source":"demo","city_mult":1.10},
     ]
 
-# ── PRESALE ALERTS ────────────────────────────────────────────
+# ── PRESALE + ON-SALE ALERTS ──────────────────────────────────
 def check_presale_alerts(events: list):
     for e in events:
+        p = e.get("profit", {})
+        if not p.get("is_profitable"):
+            continue
+        eid   = e.get("id", "")
+        name  = e.get("name", "")
+        codes = e.get("codes", [])[:5]
+        pp    = p.get("profit_per", 0)
+        url   = e.get("url", "")
+        city  = e.get("city", "")
+        src   = "✓ verified" if p.get("source") == "verified" else "estimated"
+
+        # Public on-sale countdown — face value guaranteed window
+        osd = e.get("onsale_days")
+        if osd is not None:
+            if osd == 1 and f"{eid}_os24" not in state["presale_alerted"]:
+                tg(f"🟢 *PUBLIC ON-SALE TOMORROW* ({src})\n\n🎟 *{name}*\n📍 {e.get('venue','')} · {city}\n\n💰 Face value guaranteed at open\n*+${pp:.0f}/ticket · +${pp*4:.0f} buying 4*\n\n[Event link]({url})")
+                state["presale_alerted"].add(f"{eid}_os24")
+            elif osd == 0 and f"{eid}_oslive" not in state["presale_alerted"]:
+                st = e.get("strategy", {})
+                tg(f"🟢 *ON SALE NOW — FACE VALUE LIVE*\n\n🎟 *{name}*\n📍 {e.get('venue','')} · {city}\n\n💰 *+${pp:.0f}/ticket · +${pp*4:.0f} buying 4* ({src})\n🎯 {st.get('seat','Floor GA or lower bowl')}\n\n[→ BUY NOW]({url})")
+                state["presale_alerted"].add(f"{eid}_oslive")
+
         ps = e.get("presale_date", "")
         if not ps:
             continue
-        p   = e.get("profit", {})
-        if not p.get("is_profitable"):
-            continue
         pd   = _presale_days(ps)
-        eid  = e.get("id", "")
-        name = e.get("name", "")
-        codes= e.get("codes", [])[:5]
-        pp   = p.get("profit_per", 0)
-        url  = e.get("url", "")
-        city = e.get("city", "")
-        src  = "✓ verified" if p.get("source") == "verified" else "estimated"
 
         if pd <= 3 and pd > 1 and f"{eid}_72" not in state["presale_alerted"]:
             tg(
@@ -789,6 +837,17 @@ async def run_scan():
         # 3. Score each event + check prices
         opportunities = []
         for e in wanted:
+            # HARD DATE LOCK — a past or imminent event can never be a deal.
+            # (Unclamped check; is_wanted has a softer version but this is the law.)
+            try:
+                ev_date = datetime.strptime(e.get("date", "")[:10], "%Y-%m-%d").date()
+                if ev_date < date.today() + timedelta(days=3):
+                    filtered_count += 1
+                    continue
+            except Exception:
+                filtered_count += 1
+                continue  # unparseable date → can't trust it → out
+
             face_low  = e.get("face_low", 0) or 0
             face_high = e.get("face_high", 0) or 0
             city_mult = e.get("city_mult", 1.0)
@@ -839,18 +898,47 @@ async def run_scan():
             codes = find_codes(e)
             strat = get_strategy(e, profit, score)
             pd    = _presale_days(e.get("presale_date", "")) if e.get("presale_date") else None
+            osd   = _onsale_days(e.get("on_sale", ""))
+            status = get_status(pd, osd)
+
+            # Status adjustment — the honesty layer:
+            # STALE without verified resale data → face value likely gone, demote hard
+            if status == "STALE" and profit.get("source") != "verified":
+                score["total"]   = min(score["total"], 54)
+                score["verdict"] = "WATCH"
+            elif status in ("PRESALE", "ONSALE_SOON", "FRESH"):
+                score["total"] = round(min(99, score["total"] + 8), 1)
+                if score["total"] >= 80:   score["verdict"] = "MUST BUY"
+                elif score["total"] >= 65: score["verdict"] = "STRONG BUY"
+
+            # Track when we first discovered this event (NEW badge + alert trigger)
+            eid = e.get("id", "")
+            now_iso = datetime.now().isoformat()
+            if eid not in state["first_seen"]:
+                state["first_seen"][eid] = now_iso
+            try:
+                first_dt = datetime.fromisoformat(state["first_seen"][eid])
+                is_new = (datetime.now() - first_dt) <= timedelta(hours=48)
+            except Exception:
+                is_new = True
 
             e["profit"]       = profit
             e["score"]        = score
             e["codes"]        = codes
             e["strategy"]     = strat
             e["presale_days"] = pd
+            e["onsale_days"]  = osd
+            e["status"]       = status
+            e["is_new"]       = is_new
             opportunities.append(e)
 
-        # Sort by score descending
+        # Sort: pipeline first (presale > onsale soon > fresh), then score
+        status_rank = {"PRESALE": 0, "ONSALE_SOON": 1, "FRESH": 2, "UNKNOWN": 3, "STALE": 4}
         opportunities.sort(
-            key=lambda x: x.get("score", {}).get("total", 0),
-            reverse=True
+            key=lambda x: (
+                status_rank.get(x.get("status", "UNKNOWN"), 3),
+                -x.get("score", {}).get("total", 0),
+            )
         )
 
         state["filtered_count"]      = filtered_count
@@ -859,23 +947,33 @@ async def run_scan():
         state["scan_count"]         += 1
         state["total_opportunities"] = len(opportunities)
 
-        # 4. Telegram alerts for new high-value events
+        # 4. Telegram alerts — ONLY for pipeline events (buyable at face value)
         for e in opportunities:
-            eid   = e.get("id", "")
-            total = e.get("score", {}).get("total", 0)
+            eid    = e.get("id", "")
+            total  = e.get("score", {}).get("total", 0)
+            status = e.get("status", "UNKNOWN")
+            if status not in ("PRESALE", "ONSALE_SOON", "FRESH"):
+                continue
             if total >= 65 and eid not in state["alerted_ids"]:
                 p      = e.get("profit", {})
                 sc     = e.get("score", {})
                 codes  = e.get("codes", [])[:4]
                 pp     = p.get("profit_per", 0)
                 pd_val = e.get("presale_days")
+                osd    = e.get("onsale_days")
                 src    = "✓ verified" if p.get("source") == "verified" else "estimated"
 
-                presale_note = ""
-                if pd_val is not None and pd_val >= 0:
-                    if pd_val == 0:    presale_note = "\n🔴 *PRESALE LIVE NOW!*\n"
-                    elif pd_val == 1:  presale_note = "\n⚠️ *Presale TOMORROW!*\n"
-                    elif pd_val <= 7:  presale_note = f"\n⏰ Presale in {pd_val} days\n"
+                status_note = ""
+                if status == "PRESALE" and pd_val is not None:
+                    if pd_val == 0:    status_note = "\n🔴 *PRESALE LIVE TODAY!*\n"
+                    elif pd_val == 1:  status_note = "\n⚠️ *Presale TOMORROW!*\n"
+                    else:              status_note = f"\n⏰ Presale in {pd_val} days\n"
+                elif status == "ONSALE_SOON" and osd is not None:
+                    if osd == 1:       status_note = "\n🟢 *Public on-sale TOMORROW — face value guaranteed*\n"
+                    else:              status_note = f"\n🟢 On-sale in {osd} days — face value guaranteed\n"
+                elif status == "FRESH":
+                    days_on = abs(osd) if osd is not None else 0
+                    status_note = f"\n🆕 Went on sale {days_on}d ago — face value likely still available\n"
 
                 emoji = "🔥" if sc.get("verdict") == "MUST BUY" else "✅"
                 tg(
@@ -884,7 +982,7 @@ async def run_scan():
                     f"*{e.get('name','')}*\n"
                     f"📍 {e.get('venue','')} · {e.get('city','')}\n"
                     f"📅 {e.get('date','')} ({_days_until(e.get('date',''))}d away)\n"
-                    f"{presale_note}\n"
+                    f"{status_note}\n"
                     f"💰 Pay: ${p.get('tm_total',0):.0f} → Sell: ${p.get('resell',0):.0f}\n"
                     f"*+${pp:.0f}/ticket · +${pp*4:.0f} buying 4*\n"
                     f"ROI: {p.get('roi_pct',0):.0f}%\n\n"
@@ -914,6 +1012,7 @@ def _save():
                 "total_opportunities": state["total_opportunities"],
                 "filtered_count":      state["filtered_count"],
                 "cities_scanned":      state["cities_scanned"],
+                "first_seen":          state["first_seen"],
             }, f, default=str, indent=2)
     except Exception as e:
         log.warning(f"Save error: {e}")
@@ -934,371 +1033,133 @@ HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ticket Intel</title>
+<title>Ticket Intel — Live Pipeline</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎟</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-
 :root{
-  --ink:#0d0f14;
-  --paper:#f5f3ef;
-  --surface:#ffffff;
-  --border:#e8e4dc;
-  --border2:#d4cfc5;
-  --accent:#1a1a2e;
-  --green:#1a7a5e;
-  --green-bg:#edf7f3;
-  --green-border:#c2e8d8;
-  --red:#c0392b;
-  --red-bg:#fdf0ee;
-  --red-border:#f5c2bb;
-  --amber:#b45309;
-  --amber-bg:#fef7ec;
-  --amber-border:#fcd9a0;
-  --blue:#1e4d8c;
-  --blue-bg:#eef4ff;
-  --blue-border:#c2d6f5;
-  --dim:#8a8278;
-  --mono:'DM Mono',monospace;
-  --sans:'Syne',sans-serif;
+  --ink:#0d0f14;--paper:#f5f3ef;--surface:#ffffff;--border:#e8e4dc;--border2:#d4cfc5;
+  --green:#1a7a5e;--green-bg:#edf7f3;--green-border:#c2e8d8;
+  --red:#c0392b;--red-bg:#fdf0ee;--red-border:#f5c2bb;
+  --amber:#b45309;--amber-bg:#fef7ec;--amber-border:#fcd9a0;
+  --blue:#1e4d8c;--blue-bg:#eef4ff;--blue-border:#c2d6f5;
+  --gold:#8a6d1a;--gold-bg:#faf5e4;--gold-border:#e8d89a;
+  --dim:#8a8278;--mono:'DM Mono',monospace;--sans:'Syne',sans-serif;
 }
-
-body{
-  font-family:var(--sans);
-  background:var(--paper);
-  color:var(--ink);
-  min-height:100vh;
-  -webkit-font-smoothing:antialiased;
-}
-
+body{font-family:var(--sans);background:var(--paper);color:var(--ink);min-height:100vh;-webkit-font-smoothing:antialiased}
 a{color:inherit;text-decoration:none}
 
-/* ── NAV ── */
-nav{
-  background:var(--ink);
-  padding:0 32px;
-  display:flex;
-  align-items:stretch;
-  height:56px;
-  position:sticky;
-  top:0;
-  z-index:99;
-}
-.nav-brand{
-  display:flex;
-  align-items:center;
-  gap:10px;
-  margin-right:auto;
-}
-.nav-dot{
-  width:7px;height:7px;
-  border-radius:50%;
-  background:#4ade80;
-  box-shadow:0 0 8px #4ade8099;
-  animation:glow 2s infinite;
-}
-@keyframes glow{0%,100%{opacity:1;box-shadow:0 0 8px #4ade8099}50%{opacity:.5;box-shadow:0 0 3px #4ade8033}}
-.nav-name{
-  font-family:var(--mono);
-  font-size:12px;
-  font-weight:500;
-  color:#f5f3ef;
-  letter-spacing:.15em;
-}
-.nav-badge{
-  font-family:var(--mono);
-  font-size:9px;
-  padding:2px 7px;
-  border-radius:3px;
-  border:1px solid;
-  letter-spacing:.08em;
-}
+nav{background:var(--ink);padding:0 32px;display:flex;align-items:center;height:56px;position:sticky;top:0;z-index:99}
+.nav-brand{display:flex;align-items:center;gap:10px;margin-right:auto}
+.nav-dot{width:7px;height:7px;border-radius:50%;background:#4ade80;box-shadow:0 0 8px #4ade8099;animation:glow 2s infinite}
+@keyframes glow{0%,100%{opacity:1}50%{opacity:.5}}
+.nav-name{font-family:var(--mono);font-size:12px;font-weight:500;color:#f5f3ef;letter-spacing:.15em}
+.nav-badge{font-family:var(--mono);font-size:9px;padding:2px 7px;border-radius:3px;border:1px solid;letter-spacing:.08em}
 .nav-badge.demo{background:rgba(255,165,2,.1);color:#fbbf24;border-color:rgba(251,191,36,.2)}
 .nav-badge.live{background:rgba(74,222,128,.1);color:#4ade80;border-color:rgba(74,222,128,.2)}
-.nav-right{
-  display:flex;
-  align-items:center;
-  gap:16px;
-}
-.nav-status{
-  font-family:var(--mono);
-  font-size:10px;
-  color:#6b7280;
-}
-.scan-btn{
-  font-family:var(--mono);
-  font-size:10px;
-  font-weight:500;
-  padding:0 20px;
-  height:32px;
-  border-radius:4px;
-  border:1px solid rgba(74,222,128,.35);
-  background:rgba(74,222,128,.08);
-  color:#4ade80;
-  cursor:pointer;
-  letter-spacing:.1em;
-  transition:all .15s;
-}
+.nav-right{display:flex;align-items:center;gap:16px}
+.nav-status{font-family:var(--mono);font-size:10px;color:#6b7280}
+.scan-btn{font-family:var(--mono);font-size:10px;font-weight:500;padding:0 20px;height:32px;border-radius:4px;border:1px solid rgba(74,222,128,.35);background:rgba(74,222,128,.08);color:#4ade80;cursor:pointer;letter-spacing:.1em;transition:all .15s}
 .scan-btn:hover{background:rgba(74,222,128,.18)}
 .scan-btn:disabled{opacity:.35;cursor:not-allowed}
 
-/* ── STATS ── */
-.stats-row{
-  display:grid;
-  grid-template-columns:repeat(4,1fr);
-  gap:1px;
-  background:var(--border);
-  border-bottom:1px solid var(--border);
-}
-.stat{
-  background:var(--surface);
-  padding:20px 28px;
-}
-.stat-num{
-  font-family:var(--mono);
-  font-size:28px;
-  font-weight:500;
-  line-height:1;
-}
-.stat-label{
-  font-size:11px;
-  color:var(--dim);
-  margin-top:5px;
-  letter-spacing:.06em;
-  text-transform:uppercase;
-}
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);border-bottom:1px solid var(--border)}
+.stat{background:var(--surface);padding:20px 28px}
+.stat-num{font-family:var(--mono);font-size:28px;font-weight:500;line-height:1}
+.stat-label{font-size:11px;color:var(--dim);margin-top:5px;letter-spacing:.06em;text-transform:uppercase}
 
-/* ── FILTER BAR ── */
-.filter-bar{
-  background:var(--surface);
-  border-bottom:1px solid var(--border);
-  padding:0 32px;
-  display:flex;
-  align-items:center;
-  gap:4px;
-  height:48px;
-}
-.filt{
-  font-family:var(--sans);
-  font-size:12px;
-  font-weight:500;
-  padding:5px 14px;
-  border-radius:4px;
-  border:1px solid transparent;
-  background:transparent;
-  color:var(--dim);
-  cursor:pointer;
-  transition:all .15s;
-}
+.filter-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:0 32px;display:flex;align-items:center;gap:4px;height:48px}
+.filt{font-family:var(--sans);font-size:12px;font-weight:500;padding:5px 14px;border-radius:4px;border:1px solid transparent;background:transparent;color:var(--dim);cursor:pointer;transition:all .15s}
 .filt:hover{color:var(--ink);background:var(--paper)}
-.filt.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
-.filt.verified-filt{color:var(--green)}
-.filt.verified-filt.on{background:var(--green);color:white;border-color:var(--green)}
-.scan-info{
-  font-family:var(--mono);
-  font-size:10px;
-  color:var(--dim);
-  margin-left:auto;
-}
+.filt.on{background:var(--ink);color:var(--paper)}
+.scan-info{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto}
 
-/* ── MAIN CONTENT ── */
 .main{padding:32px;max-width:960px;margin:0 auto}
 
-/* ── SECTION LABEL ── */
-.section-label{
-  font-family:var(--mono);
-  font-size:10px;
-  letter-spacing:.15em;
-  text-transform:uppercase;
-  color:var(--dim);
-  margin-bottom:12px;
-  margin-top:28px;
-  display:flex;
-  align-items:center;
-  gap:8px;
-}
+.section-label{font-family:var(--mono);font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--dim);margin:28px 0 12px;display:flex;align-items:center;gap:8px}
 .section-label:first-child{margin-top:0}
 .section-label::after{content:'';flex:1;height:1px;background:var(--border)}
+.section-label .sl-icon{font-size:13px}
+.section-label.sl-gold{color:var(--gold)}
+.section-label.sl-green{color:var(--green)}
+.section-label.sl-blue{color:var(--blue)}
+.section-sub{font-size:11px;color:var(--dim);margin:-6px 0 12px;line-height:1.5}
 
-/* ── EVENT CARD ── */
-.card{
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:12px;
-  margin-bottom:8px;
-  overflow:hidden;
-  cursor:pointer;
-  transition:border-color .2s, box-shadow .2s;
-}
+.stale-zone{opacity:.62;transition:opacity .2s}
+.stale-zone:hover{opacity:1}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:8px;overflow:hidden;cursor:pointer;transition:border-color .2s,box-shadow .2s}
 .card:hover{border-color:var(--border2);box-shadow:0 2px 12px rgba(0,0,0,.06)}
 .card.open{border-color:var(--ink)}
-
-/* Card top row */
-.card-top{
-  display:flex;
-  align-items:center;
-  gap:16px;
-  padding:18px 20px;
-}
-.score{
-  width:48px;height:48px;
-  border-radius:10px;
-  display:flex;align-items:center;justify-content:center;
-  font-family:var(--mono);
-  font-size:16px;font-weight:600;
-  flex-shrink:0;
-}
+.card-top{display:flex;align-items:center;gap:16px;padding:18px 20px}
+.score{width:48px;height:48px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:16px;font-weight:600;flex-shrink:0;border:1px solid}
 .card-body{flex:1;min-width:0}
-.card-name{
-  font-size:15px;font-weight:600;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  color:var(--ink);
-}
-.card-meta{
-  font-size:12px;color:var(--dim);margin-top:3px;
-}
+.card-name{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
+.card-meta{font-size:12px;color:var(--dim);margin-top:3px}
 .card-pills{display:flex;gap:5px;margin-top:7px;flex-wrap:wrap}
-.pill{
-  font-family:var(--mono);font-size:9px;
-  padding:2px 8px;border-radius:20px;
-  border:1px solid;letter-spacing:.05em;
-}
+.pill{font-family:var(--mono);font-size:9px;padding:2px 8px;border-radius:20px;border:1px solid;letter-spacing:.05em}
 .pill-city{background:var(--paper);border-color:var(--border2);color:var(--dim)}
-.pill-live{background:var(--red-bg);border-color:var(--red-border);color:var(--red)}
-.pill-soon{background:var(--amber-bg);border-color:var(--amber-border);color:var(--amber)}
-.pill-presale{background:var(--paper);border-color:var(--border);color:var(--dim)}
+.pill-new{background:var(--ink);border-color:var(--ink);color:var(--paper);font-weight:500}
+.pill-presale{background:var(--gold-bg);border-color:var(--gold-border);color:var(--gold);font-weight:500}
+.pill-presale-live{background:var(--red-bg);border-color:var(--red-border);color:var(--red);font-weight:500;animation:pulse-pill 1.6s infinite}
+@keyframes pulse-pill{0%,100%{opacity:1}50%{opacity:.55}}
+.pill-onsale{background:var(--green-bg);border-color:var(--green-border);color:var(--green);font-weight:500}
+.pill-fresh{background:var(--blue-bg);border-color:var(--blue-border);color:var(--blue)}
+.pill-stale{background:var(--paper);border-color:var(--border);color:var(--dim)}
 .pill-verified{background:var(--green-bg);border-color:var(--green-border);color:var(--green)}
 .pill-est{background:var(--amber-bg);border-color:var(--amber-border);color:var(--amber)}
 .card-right{text-align:right;flex-shrink:0}
-.profit-big{
-  font-family:var(--mono);font-size:18px;font-weight:600;
-  color:var(--green);
-}
+.profit-big{font-family:var(--mono);font-size:18px;font-weight:600;color:var(--green)}
 .profit-sub{font-size:10px;color:var(--dim);margin-top:2px;text-transform:uppercase;letter-spacing:.06em}
-.verdict{
-  display:inline-block;
-  font-family:var(--mono);font-size:9px;
-  padding:3px 8px;border-radius:3px;
-  margin-top:5px;letter-spacing:.06em;border:1px solid;
-}
+.verdict{display:inline-block;font-family:var(--mono);font-size:9px;padding:3px 8px;border-radius:3px;margin-top:5px;letter-spacing:.06em;border:1px solid}
 .v-MUST{background:var(--red-bg);color:var(--red);border-color:var(--red-border)}
 .v-STRONG{background:var(--green-bg);color:var(--green);border-color:var(--green-border)}
 .v-BUY{background:var(--green-bg);color:var(--green);border-color:var(--green-border)}
 .v-WATCH{background:var(--amber-bg);color:var(--amber);border-color:var(--amber-border)}
-
-/* Progress bar */
 .bar{height:2px;background:var(--border)}
 .bar-fill{height:100%;transition:width .5s cubic-bezier(.4,0,.2,1)}
 
-/* Card detail */
-.detail{
-  display:none;
-  padding:20px;
-  border-top:1px solid var(--border);
-  background:var(--paper);
-}
+.detail{display:none;padding:20px;border-top:1px solid var(--border);background:var(--paper)}
 .card.open .detail{display:block}
-
-.detail-grid{
-  display:grid;
-  grid-template-columns:repeat(4,1fr);
-  gap:8px;
-  margin-bottom:16px;
-}
-.dbox{
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:8px;
-  padding:12px 14px;
-}
-.dval{
-  font-family:var(--mono);font-size:13px;font-weight:600;color:var(--ink);
-}
-.dlbl{
-  font-size:9px;color:var(--dim);margin-top:3px;
-  text-transform:uppercase;letter-spacing:.07em;
-}
-
-/* Verified data box */
-.verified-row{
-  background:var(--green-bg);
-  border:1px solid var(--green-border);
-  border-radius:8px;
-  padding:12px 14px;
-  margin-bottom:12px;
-}
-.verified-label{
-  font-family:var(--mono);font-size:9px;font-weight:600;
-  color:var(--green);text-transform:uppercase;letter-spacing:.1em;
-  margin-bottom:4px;
-}
+.detail-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px}
+.dbox{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
+.dval{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--ink)}
+.dlbl{font-size:9px;color:var(--dim);margin-top:3px;text-transform:uppercase;letter-spacing:.07em}
+.status-banner{border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:12px;line-height:1.6;border:1px solid}
+.sb-presale{background:var(--gold-bg);border-color:var(--gold-border);color:#6b5413}
+.sb-onsale{background:var(--green-bg);border-color:var(--green-border);color:#1f5c47}
+.sb-fresh{background:var(--blue-bg);border-color:var(--blue-border);color:#1a3d6e}
+.sb-stale{background:var(--paper);border-color:var(--border2);color:var(--dim)}
+.status-banner b{font-weight:700}
+.verified-row{background:var(--green-bg);border:1px solid var(--green-border);border-radius:8px;padding:12px 14px;margin-bottom:12px}
+.verified-label{font-family:var(--mono);font-size:9px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px}
 .verified-text{font-size:12px;color:#1f5c47}
-
-/* Info rows */
-.info{
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:8px;
-  padding:12px 14px;
-  margin-bottom:8px;
-}
-.info-label{
-  font-family:var(--mono);font-size:9px;font-weight:600;
-  color:var(--dim);text-transform:uppercase;letter-spacing:.1em;
-  margin-bottom:5px;
-}
+.info{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px}
+.info-label{font-family:var(--mono);font-size:9px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px}
 .info-text{font-size:12px;color:var(--dim);line-height:1.7}
 .info-text b{color:var(--ink)}
-
-/* Presale codes */
 .codes-section{margin-bottom:14px}
-.codes-label{
-  font-family:var(--mono);font-size:9px;color:var(--dim);
-  text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;
-}
+.codes-label{font-family:var(--mono);font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px}
 .codes{display:flex;flex-wrap:wrap;gap:5px}
-.code{
-  font-family:var(--mono);font-size:10px;
-  background:var(--blue-bg);border:1px solid var(--blue-border);
-  border-radius:4px;padding:3px 9px;color:var(--blue);
-}
-
-/* Action buttons */
+.code{font-family:var(--mono);font-size:10px;background:var(--blue-bg);border:1px solid var(--blue-border);border-radius:4px;padding:3px 9px;color:var(--blue)}
 .actions{display:flex;gap:8px;flex-wrap:wrap}
-.btn-primary{
-  font-family:var(--sans);font-size:13px;font-weight:600;
-  padding:11px 22px;border-radius:8px;
-  border:none;background:var(--ink);color:var(--paper);
-  cursor:pointer;transition:opacity .15s;
-  display:flex;align-items:center;gap:7px;
-}
+.btn-primary{font-family:var(--sans);font-size:13px;font-weight:600;padding:11px 22px;border-radius:8px;border:none;background:var(--ink);color:var(--paper);cursor:pointer;transition:opacity .15s;display:flex;align-items:center;gap:7px}
 .btn-primary:hover{opacity:.85}
-.btn-secondary{
-  font-family:var(--sans);font-size:12px;font-weight:500;
-  padding:10px 18px;border-radius:8px;
-  border:1px solid var(--border2);background:var(--surface);
-  color:var(--dim);cursor:pointer;transition:all .15s;
-}
+.btn-secondary{font-family:var(--sans);font-size:12px;font-weight:500;padding:10px 18px;border-radius:8px;border:1px solid var(--border2);background:var(--surface);color:var(--dim);cursor:pointer;transition:all .15s}
 .btn-secondary:hover{border-color:var(--ink);color:var(--ink)}
 .btn-sg{border-color:var(--green-border);color:var(--green)}
-.btn-sg:hover{border-color:var(--green);background:var(--green-bg)}
 
-/* Empty state */
-.empty{
-  text-align:center;padding:80px 32px;
-}
+.pipeline-empty{background:var(--surface);border:1px dashed var(--border2);border-radius:12px;padding:28px 24px;text-align:center;margin-bottom:8px}
+.pe-title{font-size:13px;font-weight:600;color:var(--ink);margin-bottom:5px}
+.pe-text{font-size:12px;color:var(--dim);line-height:1.7}
+
+.empty{text-align:center;padding:80px 32px}
 .empty-icon{font-size:40px;margin-bottom:16px;opacity:.3}
 .empty-title{font-size:16px;font-weight:600;color:var(--ink);margin-bottom:8px}
-.empty-text{font-size:13px;color:var(--dim);line-height:1.8;max-width:400px;margin:0 auto}
-
-/* Loading */
-.loading{
-  text-align:center;padding:80px;
-  font-family:var(--mono);font-size:11px;color:var(--dim);
-  letter-spacing:.12em;text-transform:uppercase;
-  animation:fade 1.5s infinite;
-}
+.empty-text{font-size:13px;color:var(--dim);line-height:1.8;max-width:420px;margin:0 auto}
+.loading{text-align:center;padding:80px;font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.12em;text-transform:uppercase;animation:fade 1.5s infinite}
 @keyframes fade{0%,100%{opacity:.3}50%{opacity:1}}
 
 @media(max-width:640px){
@@ -1317,7 +1178,7 @@ nav{
 <nav>
   <div class="nav-brand">
     <div class="nav-dot"></div>
-    <span class="nav-name">TICKET INTEL</span>
+    <span class="nav-name">TICKET INTEL · v11</span>
     <span class="nav-badge demo" id="mode-badge">DEMO</span>
   </div>
   <div class="nav-right">
@@ -1342,8 +1203,6 @@ let events = [], filter = 'all', open = null;
 
 const fmt = s => { try { return new Date(s).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); } catch { return s; } };
 const days = s => { try { return Math.round((new Date(s)-new Date())/864e5); } catch { return 0; } };
-
-// Color system — warm/editorial palette
 const scoreStyle = n => {
   if (n >= 80) return { bg:'#fdf0ee', color:'#c0392b', border:'#f5c2bb' };
   if (n >= 65) return { bg:'#edf7f3', color:'#1a7a5e', border:'#c2e8d8' };
@@ -1351,7 +1210,7 @@ const scoreStyle = n => {
   return { bg:'#f5f3ef', color:'#8a8278', border:'#e8e4dc' };
 };
 const barColor = n => n >= 80 ? '#c0392b' : n >= 65 ? '#1a7a5e' : n >= 52 ? '#b45309' : '#d4cfc5';
-const vKey = v => v.split(' ')[0];
+const vKey = v => (v||'WATCH').split(' ')[0];
 
 async function load() {
   try {
@@ -1359,7 +1218,7 @@ async function load() {
     events = d.events || [];
     renderStats(d);
     renderFilters();
-    renderCards();
+    renderAll();
     const t = d.last_scan ? new Date(d.last_scan).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : 'never';
     document.getElementById('last-update').textContent = 'Updated ' + t;
     const isLive = events.some(e => e.source && e.source !== 'demo');
@@ -1367,7 +1226,7 @@ async function load() {
     b.textContent = isLive ? 'LIVE' : 'DEMO';
     b.className = 'nav-badge ' + (isLive ? 'live' : 'demo');
     const info = document.getElementById('scan-info');
-    if (info) info.textContent = `${d.cities_scanned||0} cities · ${d.filtered_count||0} filtered · ${events.length} opportunities`;
+    if (info) info.textContent = `${d.cities_scanned||0} cities · ${d.filtered_count||0} filtered · ${events.length} tracked`;
   } catch(e) { console.error(e); }
 }
 
@@ -1385,39 +1244,40 @@ async function scan() {
 
 function renderStats(d) {
   const ev = d.events || [];
-  const must   = ev.filter(e => e.score?.verdict === 'MUST BUY').length;
-  const strong = ev.filter(e => e.score?.verdict === 'STRONG BUY').length;
-  const ps     = ev.filter(e => e.presale_days != null && e.presale_days >= 0 && e.presale_days <= 7).length;
-  const maxP   = Math.max(0, ...ev.map(e => e.profit?.profit_4 || 0));
+  const presale = ev.filter(e => e.status === 'PRESALE').length;
+  const soon    = ev.filter(e => e.status === 'ONSALE_SOON').length;
+  const fresh   = ev.filter(e => e.status === 'FRESH').length;
+  const pipeline = ev.filter(e => ['PRESALE','ONSALE_SOON','FRESH'].includes(e.status));
+  const maxP = Math.max(0, ...pipeline.map(e => e.profit?.profit_4 || 0));
   document.getElementById('stats').innerHTML = `
-    <div class="stat"><div class="stat-num" style="color:#c0392b">${must}</div><div class="stat-label">Must buy</div></div>
-    <div class="stat"><div class="stat-num" style="color:#1a7a5e">${strong}</div><div class="stat-label">Strong buy</div></div>
-    <div class="stat"><div class="stat-num" style="color:#b45309">${ps}</div><div class="stat-label">Presales this week</div></div>
-    <div class="stat"><div class="stat-num" style="color:#1a7a5e">$${Math.round(maxP).toLocaleString()}</div><div class="stat-label">Best 4-ticket profit</div></div>
+    <div class="stat"><div class="stat-num" style="color:#8a6d1a">${presale}</div><div class="stat-label">Presale windows</div></div>
+    <div class="stat"><div class="stat-num" style="color:#1a7a5e">${soon}</div><div class="stat-label">On-sale coming</div></div>
+    <div class="stat"><div class="stat-num" style="color:#1e4d8c">${fresh}</div><div class="stat-label">Just went on sale</div></div>
+    <div class="stat"><div class="stat-num" style="color:#1a7a5e">$${Math.round(maxP).toLocaleString()}</div><div class="stat-label">Best pipeline 4-ticket</div></div>
   `;
 }
 
 function renderFilters() {
   const tabs = [
-    {k:'all',    l:'All events'},
-    {k:'concert',l:'Concerts'},
+    {k:'all', l:'All'},
+    {k:'pipeline', l:'🎯 Pipeline'},
+    {k:'concert', l:'Concerts'},
     {k:'sports', l:'Sports'},
     {k:'comedy', l:'Comedy'},
-    {k:'presale',l:'Presales'},
-    {k:'verified',l:'✓ Verified', cls:'verified-filt'},
+    {k:'verified', l:'✓ Verified'},
   ];
   document.getElementById('filters').innerHTML = tabs.map(t =>
-    `<button class="filt${filter===t.k?' on':''} ${t.cls||''}" onclick="setFilter('${t.k}')">${t.l}</button>`
+    `<button class="filt${filter===t.k?' on':''}" onclick="setFilter('${t.k}')">${t.l}</button>`
   ).join('');
 }
 
-function setFilter(f) { filter = f; renderFilters(); renderCards(); }
+function setFilter(f) { filter = f; renderFilters(); renderAll(); }
 
-function filtered() {
-  if (filter === 'all')      return events;
-  if (filter === 'presale')  return events.filter(e => e.presale_days != null && e.presale_days >= 0 && e.presale_days <= 10);
-  if (filter === 'verified') return events.filter(e => e.profit?.source === 'verified');
-  return events.filter(e => {
+function applyFilter(list) {
+  if (filter === 'all')      return list;
+  if (filter === 'pipeline') return list.filter(e => ['PRESALE','ONSALE_SOON','FRESH'].includes(e.status));
+  if (filter === 'verified') return list.filter(e => e.profit?.source === 'verified');
+  return list.filter(e => {
     const c = (e.category||'').toLowerCase();
     if (filter === 'concert') return c.includes('music') || c.includes('concert');
     if (filter === 'sports')  return c.includes('sport');
@@ -1426,59 +1286,126 @@ function filtered() {
   });
 }
 
-function renderCards() {
-  const list = filtered();
-  const groups = {
-    'MUST BUY':   list.filter(e => e.score?.verdict === 'MUST BUY'),
-    'STRONG BUY': list.filter(e => e.score?.verdict === 'STRONG BUY'),
-    'BUY':        list.filter(e => e.score?.verdict === 'BUY'),
-    'WATCH':      list.filter(e => e.score?.verdict === 'WATCH'),
-  };
-  const labels = {'MUST BUY':'Act now','STRONG BUY':'Strong buy','BUY':'Buy','WATCH':'Watch'};
+function renderAll() {
+  const list = applyFilter(events);
+
+  const presale  = list.filter(e => e.status === 'PRESALE')
+                       .sort((a,b) => (a.presale_days??99) - (b.presale_days??99));
+  const soon     = list.filter(e => e.status === 'ONSALE_SOON')
+                       .sort((a,b) => (a.onsale_days??99) - (b.onsale_days??99));
+  const fresh    = list.filter(e => e.status === 'FRESH')
+                       .sort((a,b) => (b.score?.total||0) - (a.score?.total||0));
+  const verified = list.filter(e => !['PRESALE','ONSALE_SOON','FRESH'].includes(e.status) && e.profit?.source === 'verified')
+                       .sort((a,b) => (b.score?.total||0) - (a.score?.total||0));
+  const stale    = list.filter(e => !['PRESALE','ONSALE_SOON','FRESH'].includes(e.status) && e.profit?.source !== 'verified')
+                       .sort((a,b) => (b.score?.total||0) - (a.score?.total||0));
+
   let html = '';
-  for (const [v, items] of Object.entries(groups)) {
-    if (!items.length) continue;
-    html += `<div class="section-label">${labels[v]}</div>`;
-    items.forEach(e => { html += card(e); });
+
+  // 1 — Presale windows
+  html += `<div class="section-label sl-gold"><span class="sl-icon">⏳</span>Presale windows — buy at face value</div>`;
+  if (presale.length) presale.forEach(e => html += card(e));
+  else html += pipelineEmpty('No presale windows open right now', 'The moment a tracked artist announces a presale, it appears here and your phone gets a Telegram alert. This is where the money is made.');
+
+  // 2 — On-sale coming
+  html += `<div class="section-label sl-green"><span class="sl-icon">🟢</span>Public on-sale coming — face value guaranteed</div>`;
+  if (soon.length) soon.forEach(e => html += card(e));
+  else html += pipelineEmpty('Nothing scheduled to go on sale', 'Events with a future public on-sale date land here. You get an alert the day before and the moment it opens.');
+
+  // 3 — Fresh
+  if (fresh.length) {
+    html += `<div class="section-label sl-blue"><span class="sl-icon">🆕</span>Just went on sale — face value likely available</div>`;
+    fresh.forEach(e => html += card(e));
   }
-  if (!html) html = `
-    <div class="empty">
+
+  // 4 — Verified margin
+  if (verified.length) {
+    html += `<div class="section-label sl-green"><span class="sl-icon">✓</span>Verified resale margin</div>`;
+    html += `<div class="section-sub">Already on sale, but live SeatGeek data confirms a real spread.</div>`;
+    verified.forEach(e => html += card(e));
+  }
+
+  // 5 — Stale (muted)
+  if (stale.length) {
+    html += `<div class="section-label"><span class="sl-icon">·</span>On sale for a while — face value likely gone</div>`;
+    html += `<div class="section-sub">Tracked for reference. Margins unverified — don't buy these blind.</div>`;
+    html += `<div class="stale-zone">`;
+    stale.forEach(e => html += card(e));
+    html += `</div>`;
+  }
+
+  if (!presale.length && !soon.length && !fresh.length && !verified.length && !stale.length) {
+    html = `<div class="empty">
       <div class="empty-icon">◎</div>
-      <div class="empty-title">No opportunities right now</div>
-      <div class="empty-text">The scanner filtered out every event in ${events.length > 0 ? 'this category' : '23 cities'} — either the margin was too thin or face value is already gone.<br><br>New events are announced daily. Click <strong>Scan Now</strong> or check back soon.</div>
+      <div class="empty-title">Nothing matches this filter</div>
+      <div class="empty-text">Try All or Pipeline — or click <strong>Scan Now</strong>.</div>
     </div>`;
+  }
+
   document.getElementById('main').innerHTML = html;
 }
 
-function psTag(e) {
-  const pd = e.presale_days;
-  if (pd == null || pd < 0) return '';
-  if (pd === 0) return '<span class="pill pill-live">Presale live now</span>';
-  if (pd === 1) return '<span class="pill pill-soon">Presale tomorrow</span>';
-  if (pd <= 3)  return `<span class="pill pill-soon">Presale in ${pd} days</span>`;
-  if (pd <= 7)  return `<span class="pill pill-presale">Presale in ${pd} days</span>`;
+function pipelineEmpty(title, text) {
+  return `<div class="pipeline-empty"><div class="pe-title">${title}</div><div class="pe-text">${text}</div></div>`;
+}
+
+function statusPills(e) {
+  let pills = '';
+  if (e.is_new) pills += '<span class="pill pill-new">NEW</span>';
+  const pd = e.presale_days, osd = e.onsale_days, s = e.status;
+  if (s === 'PRESALE') {
+    if (pd === 0)      pills += '<span class="pill pill-presale-live">PRESALE TODAY</span>';
+    else if (pd === 1) pills += '<span class="pill pill-presale">Presale tomorrow</span>';
+    else               pills += `<span class="pill pill-presale">Presale in ${pd}d</span>`;
+  } else if (s === 'ONSALE_SOON') {
+    if (osd === 1) pills += '<span class="pill pill-onsale">On sale tomorrow</span>';
+    else           pills += `<span class="pill pill-onsale">On sale in ${osd}d</span>`;
+  } else if (s === 'FRESH') {
+    pills += `<span class="pill pill-fresh">On sale ${Math.abs(osd||0)}d ago</span>`;
+  } else if (s === 'STALE' && osd != null) {
+    pills += `<span class="pill pill-stale">On sale ${Math.abs(osd)}d ago</span>`;
+  }
+  return pills;
+}
+
+function statusBanner(e) {
+  const s = e.status, pd = e.presale_days, osd = e.onsale_days;
+  if (s === 'PRESALE') {
+    const when = pd === 0 ? '<b>today</b>' : pd === 1 ? '<b>tomorrow</b>' : `in <b>${pd} days</b>`;
+    return `<div class="status-banner sb-presale">⏳ <b>Presale opens ${when}</b> — this is the face-value window. Have your codes ready, buy the moment it opens, list the same day.</div>`;
+  }
+  if (s === 'ONSALE_SOON') {
+    const when = osd === 1 ? '<b>tomorrow</b>' : `in <b>${osd} days</b>`;
+    return `<div class="status-banner sb-onsale">🟢 <b>Public on-sale ${when}</b> — face value guaranteed at open. No code needed, just be on Ticketmaster the minute it starts.</div>`;
+  }
+  if (s === 'FRESH') {
+    return `<div class="status-banner sb-fresh">🆕 <b>Went on sale ${Math.abs(osd||0)} days ago</b> — face value tickets likely still available. Verify price on Ticketmaster before buying.</div>`;
+  }
+  if (s === 'STALE') {
+    return `<div class="status-banner sb-stale">On sale for ${Math.abs(osd||0)} days — face value is likely gone. Only buy if you can verify a real spread on the resale market.</div>`;
+  }
   return '';
 }
 
 function card(e) {
   const sc = e.score || {}, p = e.profit || {}, st = e.strategy || {};
-  const n   = Math.round(sc.total || 0);
+  const n = Math.round(sc.total || 0);
   const sty = scoreStyle(n);
-  const vk  = vKey(sc.verdict || 'WATCH');
+  const vk = vKey(sc.verdict);
   const isV = p.source === 'verified';
-  const d   = days(e.date);
+  const d = days(e.date);
   const codes = (e.codes || []).slice(0, 12);
 
   return `
   <div class="card${open===e.id?' open':''}" id="c${e.id}" onclick="toggle('${e.id}')">
     <div class="card-top">
-      <div class="score" style="background:${sty.bg};color:${sty.color};border:1px solid ${sty.border}">${n}</div>
+      <div class="score" style="background:${sty.bg};color:${sty.color};border-color:${sty.border}">${n}</div>
       <div class="card-body">
         <div class="card-name">${e.name||''}</div>
         <div class="card-meta">${e.venue||''} &middot; ${fmt(e.date)} &middot; ${d} days away</div>
         <div class="card-pills">
           <span class="pill pill-city">${e.city||''}</span>
-          ${psTag(e)}
+          ${statusPills(e)}
           ${isV ? '<span class="pill pill-verified">✓ verified</span>' : '<span class="pill pill-est">estimated</span>'}
         </div>
       </div>
@@ -1490,59 +1417,28 @@ function card(e) {
     </div>
     <div class="bar"><div class="bar-fill" style="width:${Math.min(n,100)}%;background:${barColor(n)}"></div></div>
     <div class="detail">
+      ${statusBanner(e)}
       <div class="detail-grid">
-        <div class="dbox">
-          <div class="dval" style="color:#1a7a5e">+$${Math.round(p.profit_4||0).toLocaleString()}</div>
-          <div class="dlbl">Buying 4 tickets</div>
-        </div>
-        <div class="dbox">
-          <div class="dval">$${Math.round(p.tm_total||p.tm_face||0)} &rarr; $${Math.round(p.resell||0)}</div>
-          <div class="dlbl">You pay &rarr; resell</div>
-        </div>
-        <div class="dbox">
-          <div class="dval">${Math.round(p.roi_pct||0)}%</div>
-          <div class="dlbl">Return on investment</div>
-        </div>
-        <div class="dbox">
-          <div class="dval">$${Math.round(st.capital||0).toLocaleString()}</div>
-          <div class="dlbl">Capital needed</div>
-        </div>
+        <div class="dbox"><div class="dval" style="color:#1a7a5e">+$${Math.round(p.profit_4||0).toLocaleString()}</div><div class="dlbl">Buying 4 tickets</div></div>
+        <div class="dbox"><div class="dval">$${Math.round(p.tm_total||p.tm_face||0)} &rarr; $${Math.round(p.resell||0)}</div><div class="dlbl">You pay &rarr; resell</div></div>
+        <div class="dbox"><div class="dval">${Math.round(p.roi_pct||0)}%</div><div class="dlbl">Return</div></div>
+        <div class="dbox"><div class="dval">$${Math.round(st.capital||0).toLocaleString()}</div><div class="dlbl">Capital needed</div></div>
       </div>
-
       ${isV && p.sg_count ? `
       <div class="verified-row">
         <div class="verified-label">✓ Live SeatGeek data</div>
-        <div class="verified-text"><strong>${p.sg_count} active listings</strong> &middot; Median price <strong>$${Math.round(p.resell||0)}</strong> &middot; Range $${Math.round(p.resell_low||0)}–$${Math.round(p.resell_high||0)}</div>
+        <div class="verified-text"><strong>${p.sg_count} active listings</strong> &middot; Median <strong>$${Math.round(p.resell||0)}</strong> &middot; Range $${Math.round(p.resell_low||0)}–$${Math.round(p.resell_high||0)}</div>
       </div>` : ''}
-
-      <div class="info">
-        <div class="info-label">Where to sit</div>
-        <div class="info-text">${st.seat||'Best available floor or lower level'}</div>
-      </div>
-
-      <div class="info">
-        <div class="info-label">Listing strategy</div>
-        <div class="info-text">
-          List at <b>${st.list_at||'—'}</b> on StubHub, Vivid Seats, and SeatGeek simultaneously.<br>
-          2 weeks before: drop to <b>${st.reduce_14||'—'}</b> if unsold &middot;
-          3 days before: <b>${st.reduce_3||'—'}</b> &middot;
-          Floor: <b>${st.floor||'—'}</b>
-        </div>
-      </div>
-
-      ${codes.length ? `
-      <div class="codes-section">
-        <div class="codes-label">Presale codes to try</div>
-        <div class="codes">${codes.map(c=>`<span class="code">${c}</span>`).join('')}</div>
-      </div>` : ''}
-
+      <div class="info"><div class="info-label">Where to sit</div><div class="info-text">${st.seat||'Best available floor or lower level'}</div></div>
+      <div class="info"><div class="info-label">Listing strategy</div><div class="info-text">List at <b>${st.list_at||'—'}</b> on StubHub, Vivid Seats, and SeatGeek simultaneously.<br>2 weeks before: <b>${st.reduce_14||'—'}</b> &middot; 3 days: <b>${st.reduce_3||'—'}</b> &middot; Floor: <b>${st.floor||'—'}</b></div></div>
+      ${codes.length ? `<div class="codes-section"><div class="codes-label">Presale codes to try</div><div class="codes">${codes.map(c=>`<span class="code">${c}</span>`).join('')}</div></div>` : ''}
       <div class="actions">
-        ${e.url ? `<a href="${e.url}" target="_blank"><button class="btn-primary">Buy on Ticketmaster &rarr;</button></a>` : ''}
-        <a href="https://www.stubhub.com/find/s/?q=${encodeURIComponent(e.name||'')}" target="_blank"><button class="btn-secondary">StubHub</button></a>
-        <a href="https://www.vividseats.com/search?searchTerm=${encodeURIComponent(e.name||'')}" target="_blank"><button class="btn-secondary">Vivid Seats</button></a>
+        ${e.url ? `<a href="${e.url}" target="_blank" onclick="event.stopPropagation()"><button class="btn-primary">Buy on Ticketmaster &rarr;</button></a>` : ''}
+        <a href="https://www.stubhub.com/find/s/?q=${encodeURIComponent(e.name||'')}" target="_blank" onclick="event.stopPropagation()"><button class="btn-secondary">StubHub</button></a>
+        <a href="https://www.vividseats.com/search?searchTerm=${encodeURIComponent(e.name||'')}" target="_blank" onclick="event.stopPropagation()"><button class="btn-secondary">Vivid Seats</button></a>
         ${p.sg_url
-          ? `<a href="${p.sg_url}" target="_blank"><button class="btn-secondary btn-sg">SeatGeek ✓</button></a>`
-          : `<a href="https://www.seatgeek.com/search?q=${encodeURIComponent(e.name||'')}" target="_blank"><button class="btn-secondary">SeatGeek</button></a>`}
+          ? `<a href="${p.sg_url}" target="_blank" onclick="event.stopPropagation()"><button class="btn-secondary btn-sg">SeatGeek ✓</button></a>`
+          : `<a href="https://www.seatgeek.com/search?q=${encodeURIComponent(e.name||'')}" target="_blank" onclick="event.stopPropagation()"><button class="btn-secondary">SeatGeek</button></a>`}
       </div>
     </div>
   </div>`;
@@ -1550,7 +1446,7 @@ function card(e) {
 
 function toggle(id) {
   open = open === id ? null : id;
-  renderCards();
+  renderAll();
   if (open) {
     const el = document.getElementById('c' + id);
     if (el) el.scrollIntoView({behavior:'smooth', block:'nearest'});
@@ -1595,6 +1491,7 @@ async def on_startup(app):
             state["total_opportunities"] = saved.get("total_opportunities", 0)
             state["filtered_count"]      = saved.get("filtered_count", 0)
             state["cities_scanned"]      = saved.get("cities_scanned", 0)
+            state["first_seen"]          = saved.get("first_seen", {})
             log.info(f"Loaded {len(state['events'])} saved events")
         except Exception as e:
             log.warning(f"Could not load saved data: {e}")
@@ -1608,7 +1505,7 @@ def main():
 
     print(f"""
 ╔{'═'*55}╗
-║  TICKET INTEL PRO v7                                  ║
+║  TICKET INTEL PRO v11                                  ║
 ╠{'═'*55}╣
 ║  Mode:      {mode:<43}║
 ║  Cities:    {len(CITIES)} cities across the US                    ║
